@@ -62,26 +62,26 @@ For each unit-mass peak at nominal m/z **n** the script:
 All filters are **enabled by default**. Each can be switched off independently with a `--no-*` flag.
 
 ### 1. Nitrogen Rule  `--no-nitrogen-rule`
-Odd nominal m/z ↔ odd nitrogen count for even-electron ions (closed-shell fragments); the rule is inverted for radical cations (half-integer DBE).  
+Odd nominal m/z ↔ odd nitrogen count for even-electron ions (closed-shell fragments); the rule is inverted for radical cations (half-integer DBE).
 **Ref:** McLafferty & Turecek (1993) *Interpretation of Mass Spectra*, 4th ed. https://doi.org/10.1002/jms.1190080509
 
 ### 2. H-Deficiency Check  `--no-hd-check`
-Rejects candidates where DBE / C > 0.5 (configurable via `--max-ring-ratio`). Extraordinarily hydrogen-poor formulas are chemically implausible as EI fragments.  
+Rejects candidates where DBE / C > 0.5 (configurable via `--max-ring-ratio`). Extraordinarily hydrogen-poor formulas are chemically implausible as EI fragments.
 **Ref:** Pretsch et al. (2009) *Structure Determination of Organic Compounds*, 4th ed. https://doi.org/10.1007/978-3-540-93810-1
 
 ### 3. Lewis & Senior Rules  `--no-lewis-senior`
 Two graph-theory valence-sum constraints:
 - **Rule 1:** sum of all valences must be even.
-- **Rule 2:** sum of all valences ≥ 2 × (atom count − 1).  
+- **Rule 2:** sum of all valences ≥ 2 × (atom count − 1).
 
 **Ref:** Senior J.K. (1951) *Am. J. Math.* 73(3):663–689. https://doi.org/10.2307/2372318
 
 ### 4. Isotope Pattern Score  `--no-isotope-score`
-Scores each candidate by comparing its theoretical M+1 and M+2 isotope peaks against the observed spectrum. Score = Σ |theo% − obs%| in percentage points. Candidates exceeding `--isotope-tolerance` (default 30 pp) are rejected.  
+Scores each candidate by comparing its theoretical M+1 and M+2 isotope peaks against the observed spectrum. Score = Σ |theo% − obs%| in percentage points. Candidates exceeding `--isotope-tolerance` (default 30 pp) are rejected.
 **Ref:** Gross J.H. (2017) *Mass Spectrometry: A Textbook*, 3rd ed. https://doi.org/10.1007/978-3-319-54398-7
 
 ### 5. SMILES Constraints  `--no-smiles-constraints`
-Uses the ring count from the parent MOL block (Euler formula: rings = bonds − atoms + 1) as an upper bound on fragment DBE. A fragment cannot have more rings than the parent molecule.  
+Uses the ring count from the parent MOL block (Euler formula: rings = bonds − atoms + 1) as an upper bound on fragment DBE. A fragment cannot have more rings than the parent molecule.
 **Ref:** Weininger D. (1988) *J. Chem. Inf. Comput. Sci.* 28(1):31–36. https://doi.org/10.1021/ci00057a005
 
 ---
@@ -144,7 +144,7 @@ ei-fragment-calc spectra.sdf --hide-empty
 # peaks with no passing candidate are dropped entirely
 ei-fragment-calc spectra.sdf --best-only
 
-# Best-only with isotope patterns (SDF is always written automatically)
+# Best-only with isotope patterns
 ei-fragment-calc spectra.sdf --best-only --isotope
 
 # Skip writing the SDF output
@@ -178,7 +178,7 @@ ei-fragment-calc spectra.sdf --no-save-sdf
 
 ---
 
-## SDF File Format
+## SDF File Format — Input
 
 The tool looks for these **data field names** (case-insensitive):
 
@@ -204,25 +204,37 @@ or:
 
 ---
 
-## Output SDF (written automatically)
+## Output SDF (written automatically as `*-EXACT.sdf`)
 
-The tool always writes `<input>-EXACT.sdf` — one SDF record per (compound, peak, candidate) — unless `--no-save-sdf` is passed.
-Each record preserves the original MOL block and all original fields and adds:
+The output SDF **preserves the original file structure exactly** — one record per compound, the same MOL block, and all original data fields unchanged. Only two fields are modified:
 
-| Field | Content |
-|-------|---------|
-| `PEAK_MZ` | Nominal m/z of the spectral peak |
-| `CANDIDATE_FORMULA` | Hill-notation candidate formula |
-| `NEUTRAL_MASS` | Neutral monoisotopic mass (Da) |
-| `ION_MASS` | Expected ion m/z after electron correction |
-| `DELTA_MASS` | ion_mass − nominal_mz (signed, Da) |
-| `DBE` | Degree of unsaturation |
-| `ELECTRON_MODE` | Correction mode used |
-| `FILTER_PASSED` | YES / NO |
-| `FILTER_DETAILS` | Per-filter result messages |
-| `ISOTOPE_SCORE` | Isotope pattern deviation (pp) |
-| `ISOTOPE_PATTERN` | Theoretical pattern summary |
-| `REFERENCE_NOTES` | DOI links for all algorithms |
+### `MASS SPECTRAL PEAKS` — exact masses replace nominal m/z values
+
+Each nominal integer m/z is replaced by the **best-matching exact monoisotopic ion mass** (6 decimal places). Peaks for which no valid candidate formula was found are **removed entirely**.
+
+```
+Input (unit-mass):          Output (exact mass):
+> <MASS SPECTRAL PEAKS>     > <MASS SPECTRAL PEAKS>
+41 999                      41.038577 999
+43 850          →           43.018389 850
+44 12                       ← removed (no valid candidate)
+77 412                      77.038577 412
+```
+
+### `NUM PEAKS` — updated automatically
+
+Updated to reflect the number of peaks that received an exact mass assignment.
+
+### Caffeine example
+
+| | Before | After |
+|---|---|---|
+| `NUM PEAKS` | 90 | 42 |
+| `MASS SPECTRAL PEAKS` | integer m/z | exact masses (6 d.p.) |
+| All other fields | unchanged | unchanged |
+| MOL block | unchanged | unchanged |
+
+Use `--no-save-sdf` to suppress the output file entirely.
 
 ---
 
@@ -258,7 +270,7 @@ Mode            : best-only (top-ranked candidate per peak)
     C8H10N4O2        194.080376     194.079827   +0.079827    6.0  M(100.0%)  M+1(1.5%)  M+1(8.7%)  M+2(0.4%)  OK
 ```
 
-Of 90 peaks in the Caffeine spectrum, **42 peaks** received a best-ranked passing candidate; the remaining 48 were dropped (`--best-only` mode).
+Of 90 peaks in the Caffeine spectrum, **42 peaks** received a best-ranked passing candidate; the remaining 48 were dropped (`--best-only` mode). The output `Caffeine-EXACT.sdf` contains the same MOL block and all original fields, with 42 exact masses in the peak section.
 
 ---
 
@@ -288,6 +300,8 @@ Element data is loaded from `data/elements.csv` at runtime. To add new elements 
 pytest
 ```
 
+68 tests, 0 failures.
+
 ---
 
 ## Project Structure
@@ -301,20 +315,21 @@ ei-fragment-calculator/
 ├── data/
 │   └── elements.csv             # All element masses, abundances, valences
 ├── ei_fragment_calculator/
-│   ├── __init__.py              # Public API exports (v1.4.0)
+│   ├── __init__.py              # Public API exports (v1.5.0)
 │   ├── constants.py             # Physical constants, element data loader
 │   ├── formula.py               # Formula parsing & Hill-notation formatting
 │   ├── calculator.py            # Exact mass, DBE, electron correction, enumerator
 │   ├── isotope.py               # Isotope pattern simulation (polynomial convolution)
 │   ├── filters.py               # Five filter algorithms + rank_candidates()
 │   ├── mol_parser.py            # MDL MOL block parser (ring count)
-│   ├── sdf_parser.py            # SDF file parsing, peak extraction
+│   ├── sdf_parser.py            # SDF file parsing, mol block + peak extraction
 │   ├── sdf_writer.py            # *-EXACT.sdf output writer
 │   ├── preflight.py             # Environment / dependency checks
 │   └── cli.py                   # Command-line interface
 ├── tests/
 │   ├── test_formula.py
 │   ├── test_calculator.py
+│   ├── test_isotope.py
 │   ├── test_sdf_parser.py
 │   └── test_filters.py
 └── docs/
@@ -325,6 +340,13 @@ ei-fragment-calculator/
 ---
 
 ## Changelog
+
+### v1.5.0
+- **Changed — output SDF format:** `*-EXACT.sdf` now preserves the **exact structure of the input SDF** — one record per compound, same MOL block, all original fields intact.
+- **Changed — `MASS SPECTRAL PEAKS`:** nominal integer m/z values are replaced by the best-matching exact monoisotopic ion masses (6 decimal places). Peaks with no valid candidate are removed.
+- **Changed — `NUM PEAKS`:** updated automatically to the new peak count.
+- **Fixed — `sdf_parser.py`:** now correctly extracts the MDL MOL block from each SDF record (previously mol_block was empty).
+- **Fixed — `cli.py`:** `sdf_results` now stores the flat `fields` dict and the `mol_block` correctly.
 
 ### v1.4.1
 - **Changed:** `*-EXACT.sdf` is now written **by default** after every run. Use `--no-save-sdf` to suppress it.
