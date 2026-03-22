@@ -22,9 +22,11 @@ The ``electron_mode`` parameter accepts:
 """
 
 from itertools import product as cartesian_product
+from typing import Optional
 from .constants import MONOISOTOPIC_MASSES, VALENCE, ELECTRON_MASS
 from .formula   import hill_formula
 from .isotope   import isotope_pattern, pattern_summary
+from .filters   import FilterConfig, run_all_filters
 
 
 # ---------------------------------------------------------------------------
@@ -116,11 +118,14 @@ def is_valid_dbe(dbe: float) -> bool:
 
 def find_fragment_candidates(
     nominal_mz: int,
-    parent_composition: dict[str, int],
+    parent_composition: dict,
     tolerance: float = 0.5,
     electron_mode: str = "remove",
     include_isotope_pattern: bool = False,
-) -> list[dict]:
+    filter_config: Optional[FilterConfig] = None,
+    observed_spectrum: Optional[dict] = None,
+    parent_ring_count: Optional[int] = None,
+) -> list:
     """
     Find all elemental compositions that could explain a given unit-mass peak.
 
@@ -189,6 +194,7 @@ def find_fragment_candidates(
             "delta_mass":    round(delta, 6),
             "dbe":           dbe,
             "electron_mode": electron_mode,
+            "_composition":  composition,   # needed by filter pipeline
         }
 
         # --- optional isotope pattern ---
@@ -200,4 +206,15 @@ def find_fragment_candidates(
         candidates.append(entry)
 
     candidates.sort(key=lambda x: x["ion_mass"])
+
+    # --- optional filter pipeline ---
+    if filter_config is not None:
+        candidates = [
+            run_all_filters(
+                c, nominal_mz, filter_config,
+                observed_spectrum, parent_ring_count,
+            )
+            for c in candidates
+        ]
+
     return candidates
