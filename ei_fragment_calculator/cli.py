@@ -21,6 +21,9 @@ Usage examples
 
     # Suppress peaks with no candidates
     ei-fragment-calc spectra.sdf --hide-empty
+
+    # Show only the best-ranked candidate per peak; skip peaks with no fit
+    ei-fragment-calc spectra.sdf --best-only
 """
 
 import sys
@@ -31,6 +34,9 @@ from .sdf_parser  import parse_sdf, get_formula_and_peaks
 from .isotope     import isotope_pattern, pattern_summary
 from .constants   import ELECTRON_MASS
 from .preflight   import run_preflight_checks
+from .filters     import FilterConfig, rank_candidates
+from .mol_parser  import parse_mol_block, extract_mol_block
+from .sdf_writer  import write_exact_sdf, exact_sdf_path
 
 
 def format_record(
@@ -39,17 +45,24 @@ def format_record(
     electron_mode: str,
     hide_empty: bool,
     show_isotope: bool,
+    best_only: bool = False,
+    filter_config=None,
+    sdf_results: list = None,
 ) -> str:
     """
     Process one SDF record and return the formatted result string.
 
     Parameters
     ----------
-    record        : dict   One record from parse_sdf()
-    tolerance     : float  Mass window in Da
-    electron_mode : str    'remove' / 'add' / 'none'
-    hide_empty    : bool   If True, peaks with 0 candidates are omitted
-    show_isotope  : bool   If True, show theoretical isotope pattern per candidate
+    record        : dict        One record from parse_sdf()
+    tolerance     : float       Mass window in Da
+    electron_mode : str         'remove' / 'add' / 'none'
+    hide_empty    : bool        If True, peaks with 0 candidates are omitted
+    show_isotope  : bool        If True, show theoretical isotope pattern per candidate
+    best_only     : bool        If True, show only the highest-ranked candidate per
+                                peak and skip peaks where that candidate fails filters
+    filter_config : FilterConfig | None  If provided, run filter pipeline
+    sdf_results   : list | None  If provided, append SDF result dicts here
     """
     name  = record["name"] or "(unnamed compound)"
     lines: list[str] = []
@@ -57,14 +70,14 @@ def format_record(
     formula_str, nominal_mzs = get_formula_and_peaks(record)
 
     if formula_str is None:
-        return f"  [SKIP] No molecular formula field found for '{name}'.\n"
+        return "  [SKIP] No molecular formula field found for '{}'.\n".format(name)
     if not nominal_mzs:
-        return f"  [SKIP] No mass spectral peaks found for '{name}'.\n"
+        return "  [SKIP] No mass spectral peaks found for '{}'.\n".format(name)
 
     try:
         parent = parse_formula(formula_str.strip())
     except ValueError as exc:
-        return f"  [ERROR] {exc}\n"
+        return "  [ERROR] {}\n".format(exc)
 
     parent_formula  = hill_formula(parent)
     parent_neutral  = exact_mass(parent)
@@ -79,79 +92,142 @@ def format_record(
         parent_iso_str = ""
 
     correction_desc = {
-        "remove": f"− m_e = −{ELECTRON_MASS:.9f} Da  (positive-ion EI)",
-        "add":    f"+ m_e = +{ELECTRON_MASS:.9f} Da  (negative-ion EI)",
+        "remove": "- m_e = -{:.9f} Da  (positive-ion EI)".format(ELECTRON_MASS),
+        "add":    "+ m_e = +{:.9f} Da  (negative-ion EI)".format(ELECTRON_MASS),
         "none":   "no correction applied",
     }[electron_mode]
 
     lines.append("=" * 72)
-    lines.append(f"Compound        : {name}")
+    lines.append("Compound        : {}".format(name))
     lines.append(
-        f"Formula         : {parent_formula}   "
-        f"[neutral = {parent_neutral:.6f} Da,  DBE = {parent_dbe:.1f}]"
+        "Formula         : {}   "
+        "[neutral = {:.6f} Da,  DBE = {:.1f}]".format(
+            parent_formula, parent_neutral, parent_dbe
+        )
     )
     lines.append(
-        f"Ion mass (M+•)  : {parent_ion:.6f} Da  "
-        f"[{correction_desc}]"
+        "Ion mass (M+\u2022)  : {:.6f} Da  "
+        "[{}]".format(parent_ion, correction_desc)
     )
     if show_isotope and parent_iso_str:
-        lines.append(f"Isotope pattern : {parent_iso_str}")
-    lines.append(f"Tolerance       : ±{tolerance} Da")
-    lines.append(f"Peaks           : {len(nominal_mzs)}")
+        lines.append("Isotope pattern : {}".format(parent_iso_str))
+    lines.append("Tolerance       : \u00b1{} Da".format(tolerance))
+    lines.append("Peaks           : {}".format(len(nominal_mzs)))
+    if best_only:
+        lines.append("Mode            : best-only (top-ranked candidate per peak)")
     lines.append("=" * 72)
+
+    mol_block = record.get("mol_block", "")
+    original_fields = {k: v for k, v in record.items()
+                       if k not in ("name", "mol_block", "raw")}
 
     for mz in nominal_mzs:
         candidates = find_fragment_candidates(
             mz, parent, tolerance, electron_mode,
             include_isotope_pattern=show_isotope,
+            filter_config=filter_config,
         )
+
+        # --- best-only mode: keep only the top-ranked candidate ---
+        if best_only:
+            if candidates:
+                ranked = rank_candidates(candidates)
+                best   = ranked[0]
+                # Drop peak if best candidate does not pass filters
+                if not best.get("filter_passed", True):
+                    continue
+                candidates = [best]
+            else:
+                continue  # no candidates → peak deleted
+
+        # Collect SDF output data if requested
+        if sdf_results is not None:
+            for c in candidates:
+                sdf_results.append({
+                    "mol_block":       mol_block,
+                    "original_fields": original_fields,
+                    "compound_name":   name,
+                    "peak_mz":         mz,
+                    "candidate":       c,
+                })
 
         if not candidates and hide_empty:
             continue
 
         if candidates:
-            lines.append(f"\n  m/z {mz:>5d}  —  {len(candidates)} candidate(s)")
+            lines.append("\n  m/z {:>5d}  \u2014  {} candidate(s)".format(
+                mz, len(candidates)))
+            show_filter = filter_config is not None
 
             if show_isotope:
-                # Wider table with isotope summary column
+                filter_hdr = "  FILTER" if show_filter else ""
                 lines.append(
-                    f"    {'Formula':<14}  {'Neutral mass':>13}  "
-                    f"{'Ion m/z':>13}  {'Δ mass':>9}  {'DBE':>5}  "
-                    f"Isotope pattern"
+                    "    {:<14}  {:>13}  "
+                    "{:>13}  {:>10}  {:>5}  "
+                    "Isotope pattern{}".format(
+                        "Formula", "Neutral mass",
+                        "Ion m/z", "Delta mass", "DBE",
+                        filter_hdr
+                    )
                 )
                 lines.append(
-                    f"    {'-'*14}  {'-'*13}  {'-'*13}  {'-'*9}  {'-'*5}  "
-                    f"{'-'*30}"
+                    "    {}  {}  {}  {}  {}  {}".format(
+                        "-" * 14, "-" * 13, "-" * 13,
+                        "-" * 10, "-" * 5, "-" * 30
+                    ) + ("  " + "-" * 6 if show_filter else "")
                 )
                 for c in candidates:
+                    flt = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
                     lines.append(
-                        f"    {c['formula']:<14}  "
-                        f"{c['neutral_mass']:>13.6f}  "
-                        f"{c['ion_mass']:>13.6f}  "
-                        f"{c['delta_mass']:>+9.6f}  "
-                        f"{c['dbe']:>5.1f}  "
-                        f"{c.get('isotope_summary', '—')}"
+                        "    {:<14}  "
+                        "{:>13.6f}  "
+                        "{:>13.6f}  "
+                        "{:>+10.6f}  "
+                        "{:>5.1f}  "
+                        "{}".format(
+                            c["formula"],
+                            c["neutral_mass"],
+                            c["ion_mass"],
+                            c["delta_mass"],
+                            c["dbe"],
+                            c.get("isotope_summary", "\u2014"),
+                        ) + (flt if show_filter else "")
                     )
             else:
+                filter_hdr = "  FILTER" if show_filter else ""
                 lines.append(
-                    f"    {'Formula':<14}  {'Neutral mass':>13}  "
-                    f"{'Ion m/z':>13}  {'Δ mass':>9}  {'DBE':>5}"
+                    "    {:<14}  {:>13}  "
+                    "{:>13}  {:>10}  {:>5}{}".format(
+                        "Formula", "Neutral mass",
+                        "Ion m/z", "Delta mass", "DBE",
+                        filter_hdr
+                    )
                 )
                 lines.append(
-                    f"    {'-'*14}  {'-'*13}  {'-'*13}  {'-'*9}  {'-'*5}"
+                    "    {}  {}  {}  {}  {}".format(
+                        "-" * 14, "-" * 13, "-" * 13,
+                        "-" * 10, "-" * 5
+                    ) + ("  " + "-" * 6 if show_filter else "")
                 )
                 for c in candidates:
+                    flt = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
                     lines.append(
-                        f"    {c['formula']:<14}  "
-                        f"{c['neutral_mass']:>13.6f}  "
-                        f"{c['ion_mass']:>13.6f}  "
-                        f"{c['delta_mass']:>+9.6f}  "
-                        f"{c['dbe']:>5.1f}"
+                        "    {:<14}  "
+                        "{:>13.6f}  "
+                        "{:>13.6f}  "
+                        "{:>+10.6f}  "
+                        "{:>5.1f}".format(
+                            c["formula"],
+                            c["neutral_mass"],
+                            c["ion_mass"],
+                            c["delta_mass"],
+                            c["dbe"],
+                        ) + (flt if show_filter else "")
                     )
         else:
             lines.append(
-                f"\n  m/z {mz:>5d}  —  no candidates "
-                f"(outside formula constraints or invalid DBE)"
+                "\n  m/z {:>5d}  \u2014  no candidates "
+                "(outside formula constraints or invalid DBE)".format(mz)
             )
 
     lines.append("")
@@ -181,6 +257,7 @@ examples:
   ei-fragment-calc spectra.sdf --electron none --tolerance 0.4
   ei-fragment-calc spectra.sdf --isotope
   ei-fragment-calc spectra.sdf --electron add --output results.txt
+  ei-fragment-calc spectra.sdf --best-only --save-sdf
         """,
     )
 
@@ -203,7 +280,7 @@ examples:
         metavar="MODE",
         help=(
             "Electron-mass correction: 'remove' (EI+, default), "
-            "'add' (EI−), or 'none'."
+            "'add' (EI-), or 'none'."
         ),
     )
     parser.add_argument(
@@ -212,7 +289,7 @@ examples:
         default=False,
         help=(
             "Calculate and display the theoretical isotope pattern "
-            "(M, M+1, M+2, …) for every candidate formula."
+            "(M, M+1, M+2, ...) for every candidate formula."
         ),
     )
     parser.add_argument(
@@ -228,6 +305,55 @@ examples:
         default=False,
         help="Do not print peaks for which no candidate formula was found.",
     )
+    parser.add_argument(
+        "--best-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Show only the highest-ranked candidate per peak (ranked by "
+            "filter pass, then mass accuracy, then isotope score). "
+            "Peaks where the best candidate still fails all filters are "
+            "silently dropped from the output."
+        ),
+    )
+
+    # Algorithm toggle flags
+    filter_group = parser.add_argument_group(
+        "algorithm filters",
+        "All filters are ON by default. Use --no-* flags to deactivate individually.",
+    )
+    filter_group.add_argument(
+        "--no-nitrogen-rule", action="store_true", default=False,
+        help="Disable nitrogen rule filter. Ref: McLafferty & Turecek 1993.",
+    )
+    filter_group.add_argument(
+        "--no-hd-check", action="store_true", default=False,
+        help="Disable hydrogen deficiency (DBE/C) check. Ref: Pretsch et al. 2009.",
+    )
+    filter_group.add_argument(
+        "--no-lewis-senior", action="store_true", default=False,
+        help="Disable Lewis & Senior valence-sum rules. Ref: Senior 1951.",
+    )
+    filter_group.add_argument(
+        "--no-isotope-score", action="store_true", default=False,
+        help="Disable isotope pattern match scoring. Ref: Gross 2017.",
+    )
+    filter_group.add_argument(
+        "--no-smiles-constraints", action="store_true", default=False,
+        help="Disable structure-based ring-count constraints. Ref: Weininger 1988.",
+    )
+    filter_group.add_argument(
+        "--isotope-tolerance", type=float, default=30.0, metavar="PP",
+        help="Max isotope score deviation in percentage points (default: 30.0).",
+    )
+    filter_group.add_argument(
+        "--max-ring-ratio", type=float, default=0.5, metavar="RATIO",
+        help="Max DBE/C ratio for H-deficiency check (default: 0.5).",
+    )
+    parser.add_argument(
+        "--save-sdf", action="store_true", default=False,
+        help="Save results to <input>-EXACT.sdf alongside the input file.",
+    )
 
     return parser
 
@@ -241,18 +367,28 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args   = parser.parse_args(argv)
 
+    filter_cfg = FilterConfig(
+        nitrogen_rule      = not args.no_nitrogen_rule,
+        hd_check           = not args.no_hd_check,
+        lewis_senior       = not args.no_lewis_senior,
+        isotope_score      = not args.no_isotope_score,
+        smiles_constraints = not args.no_smiles_constraints,
+        isotope_tolerance  = args.isotope_tolerance,
+        max_ring_ratio     = args.max_ring_ratio,
+    )
+
     original_stdout = sys.stdout
     if args.output:
         try:
             sys.stdout = open(args.output, "w", encoding="utf-8")
         except OSError as exc:
-            print(f"[ERROR] Cannot open output file: {exc}", file=sys.stderr)
+            print("[ERROR] Cannot open output file: {}".format(exc), file=sys.stderr)
             sys.exit(1)
 
     try:
         records = parse_sdf(args.sdf_file)
     except FileNotFoundError:
-        print(f"[ERROR] File not found: '{args.sdf_file}'", file=sys.stderr)
+        print("[ERROR] File not found: '{}'".format(args.sdf_file), file=sys.stderr)
         sys.exit(1)
 
     if not records:
@@ -260,19 +396,31 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     electron_desc = {
-        "remove": "positive-ion EI  (m/z = M_neutral − m_e)",
+        "remove": "positive-ion EI  (m/z = M_neutral - m_e)",
         "add":    "negative-ion EI  (m/z = M_neutral + m_e)",
         "none":   "no correction   (m/z = M_neutral)",
     }[args.electron_mode]
 
     print(
-        f"EI Fragment Exact-Mass Calculator\n"
-        f"  SDF file        : {args.sdf_file}\n"
-        f"  Records found   : {len(records)}\n"
-        f"  Tolerance       : ±{args.tolerance} Da\n"
-        f"  Electron mode   : {args.electron_mode}  ({electron_desc})\n"
-        f"  Isotope pattern : {'yes' if args.isotope else 'no'}\n"
+        "EI Fragment Exact-Mass Calculator\n"
+        "  SDF file        : {}\n"
+        "  Records found   : {}\n"
+        "  Tolerance       : +/-{} Da\n"
+        "  Electron mode   : {}  ({})\n"
+        "  Isotope pattern : {}\n"
+        "  Best-only mode  : {}\n".format(
+            args.sdf_file,
+            len(records),
+            args.tolerance,
+            args.electron_mode,
+            electron_desc,
+            "yes" if args.isotope else "no",
+            "yes (top-ranked candidate per peak; unmatched peaks dropped)"
+            if args.best_only else "no",
+        )
     )
+
+    all_sdf_results: list = [] if args.save_sdf else None
 
     for record in records:
         output = format_record(
@@ -281,10 +429,18 @@ def main(argv: list[str] | None = None) -> None:
             electron_mode=args.electron_mode,
             hide_empty=args.hide_empty,
             show_isotope=args.isotope,
+            best_only=args.best_only,
+            filter_config=filter_cfg,
+            sdf_results=all_sdf_results,
         )
         print(output)
 
     if args.output:
         sys.stdout.close()
         sys.stdout = original_stdout
-        print(f"Results written to '{args.output}'.")
+        print("Results written to '{}'.".format(args.output))
+
+    if args.save_sdf and all_sdf_results is not None:
+        out_path = exact_sdf_path(args.sdf_file)
+        n = write_exact_sdf(all_sdf_results, out_path)
+        print("Saved {} records to '{}'.".format(n, out_path))

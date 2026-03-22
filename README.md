@@ -51,12 +51,59 @@ For each unit-mass peak at nominal m/z **n** the script:
    - Half-integer DBE → radical cation (odd-electron, e.g. M+•)
    - DBE < 0 → impossible → discarded
 
+5. **Runs five optional filter algorithms** (all on by default, each individually disableable via `--no-*` flags — see below).
+
+6. **Ranks candidates** by quality (filter pass → mass accuracy → isotope score).
+
+---
+
+## Five Filter Algorithms
+
+All filters are **enabled by default**. Each can be switched off independently with a `--no-*` flag.
+
+### 1. Nitrogen Rule  `--no-nitrogen-rule`
+Odd nominal m/z ↔ odd nitrogen count for even-electron ions (closed-shell fragments); the rule is inverted for radical cations (half-integer DBE).  
+**Ref:** McLafferty & Turecek (1993) *Interpretation of Mass Spectra*, 4th ed. https://doi.org/10.1002/jms.1190080509
+
+### 2. H-Deficiency Check  `--no-hd-check`
+Rejects candidates where DBE / C > 0.5 (configurable via `--max-ring-ratio`). Extraordinarily hydrogen-poor formulas are chemically implausible as EI fragments.  
+**Ref:** Pretsch et al. (2009) *Structure Determination of Organic Compounds*, 4th ed. https://doi.org/10.1007/978-3-540-93810-1
+
+### 3. Lewis & Senior Rules  `--no-lewis-senior`
+Two graph-theory valence-sum constraints:
+- **Rule 1:** sum of all valences must be even.
+- **Rule 2:** sum of all valences ≥ 2 × (atom count − 1).  
+
+**Ref:** Senior J.K. (1951) *Am. J. Math.* 73(3):663–689. https://doi.org/10.2307/2372318
+
+### 4. Isotope Pattern Score  `--no-isotope-score`
+Scores each candidate by comparing its theoretical M+1 and M+2 isotope peaks against the observed spectrum. Score = Σ |theo% − obs%| in percentage points. Candidates exceeding `--isotope-tolerance` (default 30 pp) are rejected.  
+**Ref:** Gross J.H. (2017) *Mass Spectrometry: A Textbook*, 3rd ed. https://doi.org/10.1007/978-3-319-54398-7
+
+### 5. SMILES Constraints  `--no-smiles-constraints`
+Uses the ring count from the parent MOL block (Euler formula: rings = bonds − atoms + 1) as an upper bound on fragment DBE. A fragment cannot have more rings than the parent molecule.  
+**Ref:** Weininger D. (1988) *J. Chem. Inf. Comput. Sci.* 28(1):31–36. https://doi.org/10.1021/ci00057a005
+
+---
+
+## Candidate Ranking
+
+After filtering, candidates are ranked by quality (best first):
+
+| Priority | Criterion | Direction |
+|----------|-----------|-----------|
+| 1 | `filter_passed` | True before False |
+| 2 | `\|delta_mass\|` | smaller is better |
+| 3 | `isotope_score` | lower is better |
+
+Use `--best-only` to keep only the **top-ranked candidate per peak** and automatically drop peaks where even the best candidate fails all filters.
+
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/ei-fragment-calculator.git
+git clone https://github.com/joriener/ei-fragment-calculator.git
 cd ei-fragment-calculator
 pip install -e .
 ```
@@ -84,11 +131,21 @@ ei-fragment-calc spectra.sdf --electron none
 # Tighter tolerance
 ei-fragment-calc spectra.sdf --tolerance 0.3
 
-# Save results to a file
+# Show theoretical isotope patterns
+ei-fragment-calc spectra.sdf --isotope
+
+# Save results to a text file
 ei-fragment-calc spectra.sdf --output results.txt
 
 # Suppress peaks with no candidates
 ei-fragment-calc spectra.sdf --hide-empty
+
+# Keep only the single best-ranked candidate per peak;
+# peaks with no passing candidate are dropped entirely
+ei-fragment-calc spectra.sdf --best-only
+
+# Best-only with isotope patterns, save SDF output
+ei-fragment-calc spectra.sdf --best-only --isotope --save-sdf
 ```
 
 ### All options
@@ -98,8 +155,23 @@ ei-fragment-calc spectra.sdf --hide-empty
 | `sdf_file` | — | Path to the input SDF file |
 | `--electron`, `-e` | `remove` | Electron-mass correction: `remove`, `add`, or `none` |
 | `--tolerance`, `-t` | `0.5` | Mass window in ±Da |
-| `--output`, `-o` | stdout | Write results to this file |
+| `--isotope`, `-i` | off | Show theoretical isotope pattern per candidate |
+| `--output`, `-o` | stdout | Write text results to this file |
 | `--hide-empty` | off | Omit peaks with zero candidates |
+| `--best-only` | off | Show only the highest-ranked candidate per peak; drop peaks with no passing fit |
+| `--save-sdf` | off | Write `<input>-EXACT.sdf` with one record per (compound, peak, candidate) |
+
+### Algorithm filter options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--no-nitrogen-rule` | on | Disable nitrogen rule parity check |
+| `--no-hd-check` | on | Disable DBE/C hydrogen-deficiency check |
+| `--no-lewis-senior` | on | Disable Lewis & Senior valence-sum rules |
+| `--no-isotope-score` | on | Disable isotope pattern match scoring |
+| `--no-smiles-constraints` | on | Disable ring-count upper-bound constraint |
+| `--isotope-tolerance PP` | `30.0` | Max isotope score deviation in percentage points |
+| `--max-ring-ratio RATIO` | `0.5` | Max DBE/C ratio for H-deficiency check |
 
 ---
 
@@ -129,38 +201,61 @@ or:
 
 ---
 
+## Output SDF (`--save-sdf`)
+
+With `--save-sdf` the tool writes `<input>-EXACT.sdf` — one SDF record per (compound, peak, candidate).  
+Each record preserves the original MOL block and all original fields and adds:
+
+| Field | Content |
+|-------|---------|
+| `PEAK_MZ` | Nominal m/z of the spectral peak |
+| `CANDIDATE_FORMULA` | Hill-notation candidate formula |
+| `NEUTRAL_MASS` | Neutral monoisotopic mass (Da) |
+| `ION_MASS` | Expected ion m/z after electron correction |
+| `DELTA_MASS` | ion_mass − nominal_mz (signed, Da) |
+| `DBE` | Degree of unsaturation |
+| `ELECTRON_MODE` | Correction mode used |
+| `FILTER_PASSED` | YES / NO |
+| `FILTER_DETAILS` | Per-filter result messages |
+| `ISOTOPE_SCORE` | Isotope pattern deviation (pp) |
+| `ISOTOPE_PATTERN` | Theoretical pattern summary |
+| `REFERENCE_NOTES` | DOI links for all algorithms |
+
+---
+
 ## Example Output
 
 ```
 EI Fragment Exact-Mass Calculator
-  SDF file        : examples/example.sdf
+  SDF file        : Caffeine.sdf
   Records found   : 1
-  Tolerance       : ±0.5 Da
-  Electron mode   : remove  (positive-ion EI  (m/z = M_neutral − m_e))
+  Tolerance       : +/-0.5 Da
+  Electron mode   : remove  (positive-ion EI  (m/z = M_neutral - m_e))
+  Isotope pattern : yes
+  Best-only mode  : yes (top-ranked candidate per peak; unmatched peaks dropped)
 
 ========================================================================
-Compound        : Acetophenone
-Formula         : C8H8O   [neutral mass = 120.057515 Da,  DBE = 5.0]
-Ion mass (M+•)  : 120.056966 Da  [electron: − m_e = −0.000548580 Da]
+Compound        : Caffeine
+Formula         : C8H10N4O2   [neutral = 194.080376 Da,  DBE = 6.0]
+Ion mass (M+•)  : 194.079827 Da  [- m_e = -0.000548580 Da  (positive-ion EI)]
+Isotope pattern : M(100.0%)  M+1(1.5%)  M+1(8.7%)  M+2(0.4%)
 Tolerance       : ±0.5 Da
-Peaks in spectrum: 4
+Peaks           : 90
+Mode            : best-only (top-ranked candidate per peak)
 ========================================================================
 
-  m/z    51  —  1 candidate(s)
-    Formula         Neutral mass      Ion m/z    Δ mass    DBE
-    --------------  -------------  -------------  ---------  -----
-    C4H3            51.023475      51.022926  +0.022926    3.0
+  m/z   109  —  1 candidate(s)
+    Formula          Neutral mass        Ion m/z  Delta mass    DBE  Isotope pattern  FILTER
+    --------------  -------------  -------------  ----------  -----  --------------  ------
+    C5H5N3O          109.038947     109.038399   +0.038399    4.0  M(100.0%)  M+1(5.4%)  M+2(0.2%)  OK
 
-  m/z    77  —  1 candidate(s)
-    C6H5            77.039125      77.038576  +0.038576    4.5
-
-  m/z   105  —  2 candidate(s)
-    C7H5O          105.033978     105.033430  +0.033430    5.5
-    C8H9           105.070425     105.069876  +0.069876    4.5
-
-  m/z   120  —  1 candidate(s)
-    C8H8O          120.057515     120.056966  +0.056966    5.0
+  m/z   194  —  1 candidate(s)
+    Formula          Neutral mass        Ion m/z  Delta mass    DBE  Isotope pattern  FILTER
+    --------------  -------------  -------------  ----------  -----  --------------  ------
+    C8H10N4O2        194.080376     194.079827   +0.079827    6.0  M(100.0%)  M+1(1.5%)  M+1(8.7%)  M+2(0.4%)  OK
 ```
+
+Of 90 peaks in the Caffeine spectrum, **42 peaks** received a best-ranked passing candidate; the remaining 48 were dropped (`--best-only` mode).
 
 ---
 
@@ -180,7 +275,7 @@ Peaks in spectrum: 4
 | P | 30.973761998 |
 | Si | 27.976926535 |
 
-To add more elements, extend `MONOISOTOPIC_MASSES` and `VALENCE` in `ei_fragment_calculator/constants.py`.
+Element data is loaded from `data/elements.csv` at runtime. To add new elements or update abundances, edit that CSV file — no Python source changes needed.
 
 ---
 
@@ -200,17 +295,52 @@ ei-fragment-calculator/
 ├── LICENSE
 ├── pyproject.toml
 ├── .gitignore
+├── data/
+│   └── elements.csv             # All element masses, abundances, valences
 ├── ei_fragment_calculator/
-│   ├── __init__.py          # Public API exports
-│   ├── constants.py         # Physical constants, element data, field names
-│   ├── formula.py           # Formula parsing & Hill-notation formatting
-│   ├── calculator.py        # Exact mass, DBE, electron correction, enumerator
-│   ├── sdf_parser.py        # SDF file parsing, peak extraction
-│   └── cli.py               # Command-line interface
+│   ├── __init__.py              # Public API exports (v1.4.0)
+│   ├── constants.py             # Physical constants, element data loader
+│   ├── formula.py               # Formula parsing & Hill-notation formatting
+│   ├── calculator.py            # Exact mass, DBE, electron correction, enumerator
+│   ├── isotope.py               # Isotope pattern simulation (polynomial convolution)
+│   ├── filters.py               # Five filter algorithms + rank_candidates()
+│   ├── mol_parser.py            # MDL MOL block parser (ring count)
+│   ├── sdf_parser.py            # SDF file parsing, peak extraction
+│   ├── sdf_writer.py            # *-EXACT.sdf output writer
+│   ├── preflight.py             # Environment / dependency checks
+│   └── cli.py                   # Command-line interface
 ├── tests/
 │   ├── test_formula.py
 │   ├── test_calculator.py
-│   └── test_sdf_parser.py
-└── examples/
-    └── example.sdf
+│   ├── test_sdf_parser.py
+│   └── test_filters.py
+└── docs/
+    ├── workflow.png             # Algorithm flowchart
+    └── ei_fragment_workflow.pptx
 ```
+
+---
+
+## Changelog
+
+### v1.4.0
+- **New:** `--best-only` flag — show only the highest-ranked candidate per peak (ranked by filter pass → |Δm| → isotope score); peaks with no passing candidate are silently dropped.
+- **New:** `rank_candidates()` public API function for programmatic ranking.
+- All five filter algorithms now contribute to ranking via `filter_passed` and `isotope_score`.
+
+### v1.3.0
+- Five new filter algorithms (nitrogen rule, H-deficiency, Lewis/Senior, isotope score, SMILES constraints).
+- `--save-sdf` flag writes `*-EXACT.sdf` output.
+- `FilterConfig` dataclass with per-filter `--no-*` CLI toggles.
+
+### v1.2.0
+- Isotope pattern simulation via polynomial convolution.
+- `--isotope` flag.
+- CSV-driven element database (`data/elements.csv`).
+
+### v1.1.0
+- Electron-mass correction modes (`remove` / `add` / `none`).
+- SDF file input.
+
+### v1.0.0
+- Initial release: constrained Cartesian-product enumerator + DBE filter.
