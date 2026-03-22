@@ -1,0 +1,26 @@
+
+Acetophenone
+  Example EI spectrum
+
+  0  0  0     0  0            999 V2000
+M  END
+> <MOLECULAR FORMULA>
+C8H8O
+
+> <MASS SPECTRAL PEAKS>
+51 100 77 999 105 850 120 500
+
+$$$$
+
+Toluene
+  Example EI spectrum
+
+  0  0  0     0  0            999 V2000
+M  END
+> <MOLECULAR FORMULA>
+C7H8
+
+> <MASS SPECTRAL PEAKS>
+39 200 50 150 51 250 63 300 65 400 77 500 91 999
+
+$$$$

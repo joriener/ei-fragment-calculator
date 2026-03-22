@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ei-fragment-calculator"
+version = "1.0.0"
+description = "Calculate possible exact masses for peaks in EI mass spectra using the molecular formula as an elemental upper bound."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []   # pure standard-library — no third-party dependencies
+
+[project.scripts]
+ei-fragment-calc = "ei_fragment_calculator.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
