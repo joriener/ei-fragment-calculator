@@ -1,11 +1,18 @@
 """
 sdf_writer.py
 =============
-Write fragment analysis results as an SDF file (``*-EXACT.sdf``).
+Write fragment analysis results as a modified SDF file (``*-EXACT.sdf``).
 
-One SDF record per (compound, peak, candidate) triple.  Each record
-contains the original MOL block, all original data fields, and new
-analysis fields added by the calculator.
+The output preserves the exact structure of the input SDF — one record per
+compound, same MOL block, same data fields — with two modifications:
+
+1. ``MASS SPECTRAL PEAKS``  — nominal unit-mass m/z values are replaced by
+   the best-matching exact monoisotopic masses (6 decimal places).
+   Peaks for which no valid candidate formula was found are removed.
+
+2. ``NUM PEAKS`` (or equivalent)  — updated to reflect the new peak count.
+
+No extra fields are added; no fields are removed.
 
 Output file naming
 ------------------
@@ -17,8 +24,24 @@ Reference
 MDL SDF format: https://www.daylight.com/meetings/mug05/Ertl/mug05_ertl.pdf
 """
 
+import re
+from collections import defaultdict, OrderedDict
 from pathlib import Path
-from .isotope import pattern_summary
+from .constants import PEAK_FIELD_CANDIDATES
+
+
+# ---------------------------------------------------------------------------
+# Common field name variants for "number of peaks"
+# ---------------------------------------------------------------------------
+
+_NUM_PEAKS_CANDIDATES: list[str] = [
+    "NUM PEAKS",
+    "NUM_PEAKS",
+    "NUMBER OF PEAKS",
+    "NPEAKS",
+    "NUMPEAKS",
+    "NUM SPECTRAL PEAKS",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -29,168 +52,192 @@ def exact_sdf_path(input_path: str) -> str:
     """
     Derive the output ``-EXACT.sdf`` path from the input SDF path.
 
-    Parameters
-    ----------
-    input_path : str  Path to the input ``.sdf`` file.
-
-    Returns
-    -------
-    str  Output path with ``-EXACT`` inserted before the extension.
-
     Examples
     --------
     >>> exact_sdf_path("spectra.sdf")
     'spectra-EXACT.sdf'
     """
-    p    = Path(input_path)
-    stem = p.stem
-    return str(p.parent / (stem + "-EXACT.sdf"))
+    p = Path(input_path)
+    return str(p.parent / (p.stem + "-EXACT.sdf"))
 
 
 # ---------------------------------------------------------------------------
-# SDF record builder
+# Private helpers
 # ---------------------------------------------------------------------------
 
-REFERENCE_NOTES = (
-    "Algorithms: "
-    "(1) Nitrogen rule: McLafferty & Turecek 1993 "
-    "https://doi.org/10.1002/jms.1190080509 | "
-    "(2) H-deficiency: Pretsch et al. 2009 "
-    "https://doi.org/10.1007/978-3-540-93810-1 | "
-    "(3) Lewis/Senior: Senior 1951 https://doi.org/10.2307/2372318 | "
-    "(4) Isotope pattern: Gross 2017 "
-    "https://doi.org/10.1007/978-3-319-54398-7 | "
-    "(5) SMILES/structure: Weininger 1988 "
-    "https://doi.org/10.1021/ci00057a005"
-)
+def _find_field_key(fields: dict, candidates: list) -> str | None:
+    """Return the actual dict key that case-insensitively matches a candidate."""
+    upper_map = {k.strip().upper(): k for k in fields}
+    for candidate in candidates:
+        key = upper_map.get(candidate.strip().upper())
+        if key is not None:
+            return key
+    return None
 
 
-def _format_field(name: str, value: str) -> str:
-    """Format one SDF data field block."""
-    return "> <{}>\n{}\n".format(name, value)
-
-
-def _format_filter_details(details: dict) -> str:
-    """Format filter details dict as a compact multi-line string."""
-    lines = []
-    for key, val in details.items():
-        lines.append("{}: {}".format(key, val))
-    return "\n".join(lines) if lines else "no filters applied"
-
-
-def build_sdf_record(
-    mol_block: str,
-    original_fields: dict,
-    compound_name: str,
-    peak_mz: int,
-    candidate: dict,
-) -> str:
+def _parse_peaks_with_intensity(peak_text: str) -> list:
     """
-    Build one SDF record string for a single (compound, peak, candidate).
+    Parse a peak-list string into a list of (nominal_mz: int, intensity: int) pairs.
 
-    Parameters
-    ----------
-    mol_block       : str   MDL MOL block text (may be empty).
-    original_fields : dict  Original SDF data fields to preserve.
-    compound_name   : str   Name / identifier of the compound.
-    peak_mz         : int   Nominal m/z of the spectral peak.
-    candidate       : dict  Candidate dict enriched by run_all_filters().
+    Handles both layouts:
+        ``"41 999 43 850 55 620"``     (space-separated pairs on one line)
+        ``"41 999\\n43 850\\n55 620"``  (one pair per line)
+        ``"3\\n41 999\\n43 850"``       (optional leading peak count, odd tokens)
 
     Returns
     -------
-    str  Complete SDF record ending with ``$$$$\\n``.
+    list[tuple[int, int]]  In original order (not sorted).
     """
-    parts = []
+    tokens = list(map(int, re.findall(r"\d+", peak_text)))
+    if len(tokens) < 2:
+        return []
+    # Even token count → interleaved mz/intensity pairs.
+    # Odd  token count → first token is a peak count header; skip it.
+    if len(tokens) % 2 != 0:
+        tokens = tokens[1:]
+    return [(tokens[i], tokens[i + 1]) for i in range(0, len(tokens) - 1, 2)]
 
-    if mol_block and mol_block.strip():
-        parts.append(mol_block.strip())
-    else:
-        parts.append(
-            "{}\n     EI_FRAG\n\n"
-            "  0  0  0     0  0            999 V2000\n"
-            "M  END".format(compound_name)
-        )
-    parts.append("")
 
-    for fname, fval in original_fields.items():
-        parts.append(_format_field(fname, fval))
-        parts.append("")
+def _best_passing_candidate(candidates: list) -> dict | None:
+    """
+    Return the best-quality candidate that passes all filters, or None.
 
-    iso_pattern_str = ""
-    if candidate.get("isotope_pattern"):
-        iso_pattern_str = pattern_summary(candidate["isotope_pattern"])
+    Ranking (lower = better):
+        1. filter_passed (True before False)
+        2. |delta_mass|  (smallest first)
+        3. isotope_score (lowest first)
 
-    parts.append(_format_field("PEAK_MZ",          str(peak_mz)))
-    parts.append("")
-    parts.append(_format_field("CANDIDATE_FORMULA", candidate.get("formula", "")))
-    parts.append("")
-    parts.append(_format_field("NEUTRAL_MASS",
-                               "{:.6f}".format(candidate.get("neutral_mass", 0.0))))
-    parts.append("")
-    parts.append(_format_field("ION_MASS",
-                               "{:.6f}".format(candidate.get("ion_mass", 0.0))))
-    parts.append("")
-    parts.append(_format_field("DELTA_MASS",
-                               "{:+.6f}".format(candidate.get("delta_mass", 0.0))))
-    parts.append("")
-    parts.append(_format_field("DBE",
-                               "{:.1f}".format(candidate.get("dbe", 0.0))))
-    parts.append("")
-    parts.append(_format_field("ELECTRON_MODE",    candidate.get("electron_mode", "remove")))
-    parts.append("")
-    parts.append(_format_field("FILTER_PASSED",
-                               "YES" if candidate.get("filter_passed", True) else "NO"))
-    parts.append("")
-    parts.append(_format_field("FILTER_DETAILS",
-                               _format_filter_details(candidate.get("filter_details", {}))))
-    parts.append("")
-    parts.append(_format_field("ISOTOPE_SCORE",
-                               "{:.2f}".format(candidate.get("isotope_score", 0.0))))
-    parts.append("")
-
-    if iso_pattern_str:
-        parts.append(_format_field("ISOTOPE_PATTERN", iso_pattern_str))
-        parts.append("")
-
-    parts.append(_format_field("REFERENCE_NOTES", REFERENCE_NOTES))
-    parts.append("")
-    parts.append("$$$$")
-    parts.append("")
-
-    return "\n".join(parts)
+    If no filters were applied (filter_passed key absent), all candidates
+    are treated as passing.
+    """
+    passing = [c for c in candidates if c.get("filter_passed", True)]
+    if not passing:
+        return None
+    return min(
+        passing,
+        key=lambda c: (abs(c.get("delta_mass", 0.0)), c.get("isotope_score", 0.0)),
+    )
 
 
 # ---------------------------------------------------------------------------
-# Main writer function
+# Main writer
 # ---------------------------------------------------------------------------
 
-def write_exact_sdf(results: list, output_path: str) -> int:
+def write_exact_masses_sdf(results: list, output_path: str) -> int:
     """
-    Write all candidate results to an ``-EXACT.sdf`` file.
+    Write one SDF record per compound with exact masses in the peak field.
+
+    The output mirrors the original SDF structure exactly. Only
+    ``MASS SPECTRAL PEAKS`` and ``NUM PEAKS`` are modified:
+
+    - Each nominal m/z that has a passing candidate formula is replaced
+      by the best-matching exact ion mass (6 decimal places).
+    - Peaks with no valid candidate are removed entirely.
+    - ``NUM PEAKS`` is updated to the new peak count.
 
     Parameters
     ----------
     results     : list  List of result dicts, each containing:
-                        ``mol_block``, ``original_fields``,
-                        ``compound_name``, ``peak_mz``, ``candidate``.
-    output_path : str   Path for the output SDF file.
+                        ``mol_block``       -- MDL MOL block string
+                        ``fields``          -- flat dict of original SDF fields
+                        ``compound_name``   -- compound name string
+                        ``peak_mz``         -- nominal integer m/z
+                        ``candidate``       -- candidate dict from the pipeline
+    output_path : str   Path for the ``*-EXACT.sdf`` output file.
 
     Returns
     -------
     int  Number of SDF records written.
     """
+    # ---- Group results by compound (preserve input order) ----------------
+    compound_order: list[str] = []
+    compounds: dict[str, dict] = {}
+
+    for result in results:
+        name = result["compound_name"]
+        if name not in compounds:
+            compound_order.append(name)
+            compounds[name] = {
+                "mol_block": result.get("mol_block", ""),
+                "fields":    dict(result["fields"]),
+                "peaks":     defaultdict(list),   # nominal_mz -> [candidates]
+            }
+        compounds[name]["peaks"][result["peak_mz"]].append(result["candidate"])
+
+    # ---- Write one record per compound -----------------------------------
     records_written = 0
 
     with open(output_path, "w", encoding="utf-8") as fh:
-        for result in results:
-            record = build_sdf_record(
-                mol_block       = result.get("mol_block", ""),
-                original_fields = result.get("original_fields", {}),
-                compound_name   = result.get("compound_name", ""),
-                peak_mz         = result.get("peak_mz", 0),
-                candidate       = result.get("candidate", {}),
-            )
-            fh.write(record)
+        for name in compound_order:
+            data     = compounds[name]
+            fields   = data["fields"]
+            mol_blk  = data["mol_block"]
+            peaks_by_mz = data["peaks"]
+
+            # Find the peak field key in this record's fields
+            peak_key     = _find_field_key(fields, PEAK_FIELD_CANDIDATES)
+            num_key      = _find_field_key(fields, _NUM_PEAKS_CANDIDATES)
+
+            # Parse original (mz, intensity) pairs
+            mz_intensity = []
+            if peak_key and fields.get(peak_key):
+                mz_intensity = _parse_peaks_with_intensity(fields[peak_key])
+
+            # Build new peak list: replace nominal mz with best exact mass
+            new_peaks: list[tuple[str, int]] = []
+            for mz, intensity in mz_intensity:
+                if mz in peaks_by_mz:
+                    best = _best_passing_candidate(peaks_by_mz[mz])
+                    if best is not None:
+                        new_peaks.append(("{:.6f}".format(best["ion_mass"]), intensity))
+
+            # Build modified fields dict (preserve original key order)
+            modified: dict[str, str] = OrderedDict()
+            for k, v in fields.items():
+                if num_key and k == num_key:
+                    modified[k] = str(len(new_peaks))
+                elif peak_key and k == peak_key:
+                    modified[k] = "\n".join(
+                        "{} {}".format(m, i) for m, i in new_peaks
+                    )
+                else:
+                    modified[k] = v
+
+            # ---- Assemble the SDF record ---------------------------------
+            parts: list[str] = []
+
+            # MOL block (or minimal placeholder if absent)
+            if mol_blk:
+                parts.append(mol_blk)
+            else:
+                parts.append(
+                    "{}\n     EI_FRAG\n\n"
+                    "  0  0  0     0  0            999 V2000\n"
+                    "M  END".format(name)
+                )
+
+            # Data fields
+            for fname, fval in modified.items():
+                parts.append("")
+                parts.append("> <{}>".format(fname))
+                parts.append(fval)
+
+            parts.append("")
+            parts.append("$$$$")
+            parts.append("")
+
+            fh.write("\n".join(parts))
             records_written += 1
 
     return records_written
+
+
+# ---------------------------------------------------------------------------
+# Legacy writer (kept for backward API compatibility)
+# ---------------------------------------------------------------------------
+
+def write_exact_sdf(results: list, output_path: str) -> int:
+    """
+    Alias for :func:`write_exact_masses_sdf` (retained for compatibility).
+    """
+    return write_exact_masses_sdf(results, output_path)

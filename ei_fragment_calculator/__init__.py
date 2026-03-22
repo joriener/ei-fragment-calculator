@@ -25,9 +25,9 @@ from .filters    import (FilterConfig, run_all_filters, rank_candidates,
                          apply_nitrogen_rule, apply_hd_check, apply_lewis_senior,
                          score_isotope_match, apply_smiles_constraints)
 from .mol_parser import parse_mol_block, extract_mol_block, MolInfo
-from .sdf_writer import write_exact_sdf, exact_sdf_path
+from .sdf_writer import write_exact_masses_sdf, write_exact_sdf, exact_sdf_path
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 __author__  = "Your Name"
 __license__ = "MIT"
 
@@ -58,6 +58,7 @@ __all__ = [
     "parse_mol_block",
     "extract_mol_block",
     "MolInfo",
+    "write_exact_masses_sdf",
     "write_exact_sdf",
     "exact_sdf_path",
 ]

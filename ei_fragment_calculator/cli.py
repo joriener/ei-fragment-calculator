@@ -36,7 +36,7 @@ from .constants   import ELECTRON_MASS
 from .preflight   import run_preflight_checks
 from .filters     import FilterConfig, rank_candidates
 from .mol_parser  import parse_mol_block, extract_mol_block
-from .sdf_writer  import write_exact_sdf, exact_sdf_path
+from .sdf_writer  import write_exact_masses_sdf, exact_sdf_path
 
 
 def format_record(
@@ -118,8 +118,7 @@ def format_record(
     lines.append("=" * 72)
 
     mol_block = record.get("mol_block", "")
-    original_fields = {k: v for k, v in record.items()
-                       if k not in ("name", "mol_block", "raw")}
+    original_fields = record.get("fields", {})
 
     for mz in nominal_mzs:
         candidates = find_fragment_candidates(
@@ -144,11 +143,11 @@ def format_record(
         if sdf_results is not None:
             for c in candidates:
                 sdf_results.append({
-                    "mol_block":       mol_block,
-                    "original_fields": original_fields,
-                    "compound_name":   name,
-                    "peak_mz":         mz,
-                    "candidate":       c,
+                    "mol_block":     mol_block,
+                    "fields":        original_fields,
+                    "compound_name": name,
+                    "peak_mz":       mz,
+                    "candidate":     c,
                 })
 
         if not candidates and hide_empty:
@@ -444,5 +443,5 @@ def main(argv: list[str] | None = None) -> None:
 
     if save_sdf and all_sdf_results is not None:
         out_path = exact_sdf_path(args.sdf_file)
-        n = write_exact_sdf(all_sdf_results, out_path)
-        print("Saved {} records to '{}'.".format(n, out_path))
+        n = write_exact_masses_sdf(all_sdf_results, out_path)
+        print("Saved {} compound(s) to '{}'.".format(n, out_path))

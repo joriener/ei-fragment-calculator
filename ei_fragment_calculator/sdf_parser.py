@@ -64,18 +64,24 @@ def parse_sdf(filepath: str) -> list[dict]:
         # The field value spans all following non-header lines until a blank
         # line or the next header.
         # ------------------------------------------------------------------
+        # ---- Extract MOL block (everything before the first "> <…>" line) ----
+        mol_block_lines: list[str] = []
         fields: dict[str, str] = {}
         field_name: str | None = None
         value_lines: list[str] = []
+        in_mol_block = True
 
         for line in lines:
             header_match = re.match(r"^>\s*<([^>]+)>", line)
             if header_match:
+                in_mol_block = False
                 # Save previous field before starting a new one
                 if field_name is not None:
                     fields[field_name] = "\n".join(value_lines).strip()
                 field_name  = header_match.group(1).strip()
                 value_lines = []
+            elif in_mol_block:
+                mol_block_lines.append(line)
             elif field_name is not None:
                 value_lines.append(line)
 
@@ -83,7 +89,8 @@ def parse_sdf(filepath: str) -> list[dict]:
         if field_name is not None:
             fields[field_name] = "\n".join(value_lines).strip()
 
-        records.append({"name": name, "fields": fields})
+        mol_block = "\n".join(mol_block_lines).strip()
+        records.append({"name": name, "mol_block": mol_block, "fields": fields})
 
     return records
 
