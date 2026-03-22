@@ -354,6 +354,13 @@ examples:
         "--no-save-sdf", action="store_true", default=False,
         help="Do not write the <input>-EXACT.sdf output file (SDF is saved by default).",
     )
+    parser.add_argument(
+        "--output-sdf", type=str, default=None, metavar="FILE",
+        help=(
+            "Write the EXACT.sdf output to FILE instead of the default "
+            "'<input>-EXACT.sdf' path next to the input file."
+        ),
+    )
 
     return parser
 
@@ -442,6 +449,6 @@ def main(argv: list[str] | None = None) -> None:
         print("Results written to '{}'.".format(args.output))
 
     if save_sdf and all_sdf_results is not None:
-        out_path = exact_sdf_path(args.sdf_file)
+        out_path = args.output_sdf or exact_sdf_path(args.sdf_file)
         n = write_exact_masses_sdf(all_sdf_results, out_path)
         print("Saved {} compound(s) to '{}'.".format(n, out_path))

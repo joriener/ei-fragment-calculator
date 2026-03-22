@@ -116,6 +116,31 @@ pip install -e ".[dev]"
 
 ---
 
+## GUI (Graphical Interface)
+
+A point-and-click desktop application is included.  No command line required.
+
+```bash
+ei-fragment-gui
+```
+
+Or via Python directly:
+
+```bash
+python -m ei_fragment_calculator.gui
+```
+
+The window has two tabs:
+
+| Tab | Description |
+|-----|-------------|
+| **Fragment Calculator** | Full GUI for `ei-fragment-calc` — browse for an SDF file, set all options, run, and view results inline. The output `*-EXACT.sdf` path is shown with an *Open output folder* button. |
+| **SDF Enricher** | GUI for `sdf-enrich` (requires `sdf-enricher`). Toggle data sources (PubChem, ChEBI, KEGG, HMDB), set delay, and enrich in one click. |
+
+> **Requires:** Python's built-in `tkinter`.  On most systems this is already present.  On Ubuntu/Debian: `sudo apt install python3-tk`.
+
+---
+
 ## Usage
 
 ```bash
@@ -315,7 +340,7 @@ ei-fragment-calculator/
 ├── data/
 │   └── elements.csv             # All element masses, abundances, valences
 ├── ei_fragment_calculator/
-│   ├── __init__.py              # Public API exports (v1.5.0)
+│   ├── __init__.py              # Public API exports (v1.6.1)
 │   ├── constants.py             # Physical constants, element data loader
 │   ├── formula.py               # Formula parsing & Hill-notation formatting
 │   ├── calculator.py            # Exact mass, DBE, electron correction, enumerator
@@ -339,7 +364,99 @@ ei-fragment-calculator/
 
 ---
 
+## Related Tools
+
+### sdf-enricher
+
+[**sdf-enricher**](https://github.com/joriener/sdf-enricher) is a standalone companion package that retrieves missing compound metadata from free external databases and adds it to SDF files.
+
+**What it fills in automatically:**
+
+| Field | Source |
+|-------|--------|
+| `FORMULA`, `SMILES`, `INCHI`, `INCHIKEY` | PubChem |
+| `CASNO`, `SYNONYMS`, `PUBCHEM_CID` | PubChem |
+| `CHEBI` | ChEBI |
+| `KEGG` | KEGG |
+| `HMDB` | HMDB |
+| `EXACT MASS` | calculated locally from formula |
+| `SPLASH` | calculated locally (requires `splashpy`) |
+
+**Install:**
+
+```bash
+pip install sdf-enricher
+```
+
+or install the enricher together with this package:
+
+```bash
+pip install "ei-fragment-calculator[enrich]"
+```
+
+**Typical workflow:**
+
+```bash
+# 1. Enrich SDF metadata from online databases
+sdf-enrich my_spectra.sdf                    # → my_spectra-ENRICHED.sdf
+
+# 2. Calculate exact fragment masses from the enriched SDF
+ei-fragment-calc my_spectra-ENRICHED.sdf     # → my_spectra-ENRICHED-EXACT.sdf
+```
+
+**Python API:**
+
+```python
+from sdf_enricher import read_sdf, write_sdf, enrich_records, EnrichConfig
+
+records = read_sdf("my_spectra.sdf")
+enrich_records(records, config=EnrichConfig(kegg=False))
+write_sdf(records, "my_spectra-ENRICHED.sdf")
+```
+
+---
+
 ## Changelog
+
+### v1.6.3
+- **GUI — full rewrite:** four-tab desktop application replacing the earlier
+  two-tab version.
+  - **Fragment Calculator tab:** input SDF browser, custom output SDF path
+    browser, optional text-log file path, all tolerance / electron-mode /
+    filter options, editable numeric defaults via Spinbox controls, hover
+    tooltips on every option, *Save as Default* / *Reset to Factory* buttons
+    (settings persisted in `~/.ei_fragment_calculator_gui.json`),
+    live-streaming colour-coded terminal output, animated progress bar,
+    *Open output folder* button.
+  - **Element Table tab:** full inline CRUD editor for `data/elements.csv`
+    (double-click any cell to edit, Add Row, Delete Row, Save, Reload).
+  - **SDF Enricher tab:** custom input + output path pickers, all source
+    toggles, delay control, *Save as Default*.
+  - **Packages tab:** shows install status of all optional packages; one-click
+    *Install selected* and *Install ALL missing* buttons that run pip in a
+    background thread and show live output.
+  - **Startup banner:** yellow warning bar if any optional package is missing.
+- **CLI — new `--output-sdf FILE` flag:** specify a custom output path for
+  the `*-EXACT.sdf` file (overrides the default `<input>-EXACT.sdf` name).
+
+### v1.6.2
+- **New — GUI:** `ei-fragment-gui` command launches a dark-themed tkinter desktop
+  application with two tabs (Fragment Calculator / SDF Enricher).  Runs the
+  calculation in a background thread with a live-streaming output pane and
+  colour-coded OK / FAIL lines.  No extra dependencies — uses Python's built-in
+  `tkinter`.
+- **New entry point:** `ei-fragment-gui = "ei_fragment_calculator.gui:main"`
+
+### v1.6.1
+- **Changed — enrichment moved to sdf-enricher:** `enrich.py` and `enrich_cli.py`
+  are now thin compatibility shims that delegate to the standalone
+  [sdf-enricher](https://github.com/joriener/sdf-enricher) package.
+  Install enrichment support with `pip install "ei-fragment-calculator[enrich]"`.
+- **Changed — optional dependency:** `[enrich]` extra now installs `sdf-enricher`
+  instead of `splashpy` (use `[splash]` for splashpy alone, `[all]` for everything).
+- **Compatibility:** existing code importing from `ei_fragment_calculator.enrich`
+  continues to work (with a `DeprecationWarning`); the `ei-enrich-sdf` command
+  redirects to `sdf-enrich`.
 
 ### v1.5.0
 - **Changed — output SDF format:** `*-EXACT.sdf` now preserves the **exact structure of the input SDF** — one record per compound, same MOL block, all original fields intact.
