@@ -32,3 +32,4 @@ Thumbs.db
 # Output files
 *.txt
 !examples/
+nist_ri.SDF
