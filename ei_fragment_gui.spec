@@ -44,6 +44,8 @@ def _try_collect(pkg_name: str) -> None:
 
 _try_collect("sdf_enricher")
 _try_collect("splashpy")
+_try_collect("matplotlib")
+_try_collect("pytest")
 
 # ── Icon (optional) ──────────────────────────────────────────────────────────
 # Place a 256×256 icon at  docs/icon.ico  to use a custom icon.
