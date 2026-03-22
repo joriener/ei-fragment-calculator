@@ -92,9 +92,6 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Keep the bundle lean — matplotlib is only needed for the diagram
-        # script, not the GUI itself.  Users can still install it separately.
-        "matplotlib",
         "numpy",
         "scipy",
     ],
