@@ -41,11 +41,16 @@ except ImportError:
     _HAS_ENRICHER = False
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths — handle both normal installs and PyInstaller-frozen builds.
+# PyInstaller 6+ places data files under  <dist>/_internal/  and sets
+# sys._MEIPASS to that directory at runtime.
 # ---------------------------------------------------------------------------
-_PKG_DIR      = Path(__file__).parent
-_PROJECT_ROOT = _PKG_DIR.parent
-_ELEMENTS_CSV = _PROJECT_ROOT / "data" / "elements.csv"
+def _find_elements_csv() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "data" / "elements.csv"
+    return Path(__file__).parent.parent / "data" / "elements.csv"
+
+_ELEMENTS_CSV  = _find_elements_csv()
 _SETTINGS_FILE = Path.home() / ".ei_fragment_calculator_gui.json"
 
 # ---------------------------------------------------------------------------
