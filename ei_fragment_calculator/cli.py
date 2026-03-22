@@ -257,7 +257,8 @@ examples:
   ei-fragment-calc spectra.sdf --electron none --tolerance 0.4
   ei-fragment-calc spectra.sdf --isotope
   ei-fragment-calc spectra.sdf --electron add --output results.txt
-  ei-fragment-calc spectra.sdf --best-only --save-sdf
+  ei-fragment-calc spectra.sdf --best-only
+  ei-fragment-calc spectra.sdf --no-save-sdf   # skip SDF output
         """,
     )
 
@@ -351,8 +352,8 @@ examples:
         help="Max DBE/C ratio for H-deficiency check (default: 0.5).",
     )
     parser.add_argument(
-        "--save-sdf", action="store_true", default=False,
-        help="Save results to <input>-EXACT.sdf alongside the input file.",
+        "--no-save-sdf", action="store_true", default=False,
+        help="Do not write the <input>-EXACT.sdf output file (SDF is saved by default).",
     )
 
     return parser
@@ -420,7 +421,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     )
 
-    all_sdf_results: list = [] if args.save_sdf else None
+    save_sdf = not args.no_save_sdf
+    all_sdf_results: list = [] if save_sdf else None
 
     for record in records:
         output = format_record(
@@ -440,7 +442,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.stdout = original_stdout
         print("Results written to '{}'.".format(args.output))
 
-    if args.save_sdf and all_sdf_results is not None:
+    if save_sdf and all_sdf_results is not None:
         out_path = exact_sdf_path(args.sdf_file)
         n = write_exact_sdf(all_sdf_results, out_path)
         print("Saved {} records to '{}'.".format(n, out_path))

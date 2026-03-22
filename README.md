@@ -144,8 +144,11 @@ ei-fragment-calc spectra.sdf --hide-empty
 # peaks with no passing candidate are dropped entirely
 ei-fragment-calc spectra.sdf --best-only
 
-# Best-only with isotope patterns, save SDF output
-ei-fragment-calc spectra.sdf --best-only --isotope --save-sdf
+# Best-only with isotope patterns (SDF is always written automatically)
+ei-fragment-calc spectra.sdf --best-only --isotope
+
+# Skip writing the SDF output
+ei-fragment-calc spectra.sdf --no-save-sdf
 ```
 
 ### All options
@@ -159,7 +162,7 @@ ei-fragment-calc spectra.sdf --best-only --isotope --save-sdf
 | `--output`, `-o` | stdout | Write text results to this file |
 | `--hide-empty` | off | Omit peaks with zero candidates |
 | `--best-only` | off | Show only the highest-ranked candidate per peak; drop peaks with no passing fit |
-| `--save-sdf` | off | Write `<input>-EXACT.sdf` with one record per (compound, peak, candidate) |
+| `--no-save-sdf` | — | Skip writing `<input>-EXACT.sdf` (the SDF output is written **by default**) |
 
 ### Algorithm filter options
 
@@ -201,9 +204,9 @@ or:
 
 ---
 
-## Output SDF (`--save-sdf`)
+## Output SDF (written automatically)
 
-With `--save-sdf` the tool writes `<input>-EXACT.sdf` — one SDF record per (compound, peak, candidate).  
+The tool always writes `<input>-EXACT.sdf` — one SDF record per (compound, peak, candidate) — unless `--no-save-sdf` is passed.
 Each record preserves the original MOL block and all original fields and adds:
 
 | Field | Content |
@@ -323,6 +326,9 @@ ei-fragment-calculator/
 
 ## Changelog
 
+### v1.4.1
+- **Changed:** `*-EXACT.sdf` is now written **by default** after every run. Use `--no-save-sdf` to suppress it.
+
 ### v1.4.0
 - **New:** `--best-only` flag — show only the highest-ranked candidate per peak (ranked by filter pass → |Δm| → isotope score); peaks with no passing candidate are silently dropped.
 - **New:** `rank_candidates()` public API function for programmatic ranking.
@@ -330,7 +336,7 @@ ei-fragment-calculator/
 
 ### v1.3.0
 - Five new filter algorithms (nitrogen rule, H-deficiency, Lewis/Senior, isotope score, SMILES constraints).
-- `--save-sdf` flag writes `*-EXACT.sdf` output.
+- `--save-sdf` flag writes `*-EXACT.sdf` output (made default in v1.4.1).
 - `FilterConfig` dataclass with per-filter `--no-*` CLI toggles.
 
 ### v1.2.0

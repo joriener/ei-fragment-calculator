@@ -27,7 +27,7 @@ from .filters    import (FilterConfig, run_all_filters, rank_candidates,
 from .mol_parser import parse_mol_block, extract_mol_block, MolInfo
 from .sdf_writer import write_exact_sdf, exact_sdf_path
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 __author__  = "Your Name"
 __license__ = "MIT"
 
