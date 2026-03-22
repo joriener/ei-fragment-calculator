@@ -1,207 +1,193 @@
-# Installation Guide — EI Fragment Exact-Mass Calculator v1.5.0
+# Installation Guide - EI Fragment Exact-Mass Calculator
 
-This guide covers everything needed to get the tool running on a **fresh Windows PC**.
+This guide explains how to install the tool from scratch on any Windows, macOS
+or Linux machine and verify that everything works correctly.
 
 ---
 
-## Requirements
+## System requirements
 
-| Requirement | Version | Notes |
+| Requirement | Minimum | Recommended |
 |---|---|---|
-| **Python** | **3.10 or newer** | Only stdlib is used — no conda needed |
-| **pip** | any recent version | bundled with Python |
-| **setuptools** | ≥ 68 | upgraded automatically by `install.bat` |
-| **wheel** | any | upgraded automatically by `install.bat` |
-| matplotlib | optional | only for `scripts/generate_workflow_image.py` |
+| **Python** | 3.10 | 3.11 or 3.12 |
+| **pip** | 21+ | latest |
+| **OS** | Windows 10 / macOS 11 / Ubuntu 20.04 | any modern OS |
+| **Internet** | - | required for `ei-enrich-sdf` API lookups |
+| **Disk** | ~5 MB | - |
+| **RAM** | 64 MB | - |
 
-No other third-party packages are required to run the tool.
-
----
-
-## Step 1 — Install Python (if not already installed)
-
-1. Go to **https://www.python.org/downloads/**
-2. Download **Python 3.11** or **3.12** (latest stable recommended)
-3. Run the installer and on the first screen tick both:
-   - `[x] Install launcher for all users`
-   - `[x] Add Python to PATH`  ← **important**
-4. Click **Install Now**
-
-Verify afterwards in a new command prompt:
-
-```
-python --version
-```
-
-Expected output: `Python 3.11.x` (or 3.12.x / 3.10.x)
+No third-party Python packages are required to run `ei-fragment-calc`.
+Optional packages add extra features (see below).
 
 ---
 
-## Step 2 — Extract the archive
+## Step 1 - Install Python 3.10+
 
-Unzip `ei-fragment-calculator-v1.5.0.zip` to any folder, e.g.:
+### Windows
+1. Download the official installer from https://www.python.org/downloads/
+2. Run the installer - **check "Add Python to PATH"**
+3. Verify: open a new PowerShell or Command Prompt and run:
+   ```
+   python --version
+   ```
+   Expected: `Python 3.10.x` or newer.
 
+### macOS
+```bash
+brew install python@3.11
 ```
-C:\Tools\ei-fragment-calculator\
-```
+or download from https://www.python.org/downloads/macos/
 
-You should see these files in the folder:
-
-```
-install.bat         ← run this to install
-INSTALL.md          ← this file
-README.md
-pyproject.toml
-data\
-ei_fragment_calculator\
-Spectra\
-tests\
-docs\
+### Linux (Ubuntu/Debian)
+```bash
+sudo apt update && sudo apt install python3.11 python3.11-pip
 ```
 
 ---
 
-## Step 3 — Run the installer
+## Step 2 - Get the project
 
-**Double-click `install.bat`** (or open a command prompt and run it):
+### Option A - from the ZIP archive (no git needed)
+1. Unzip `ei-fragment-calculator-v1.5.0.zip` to any folder, e.g.:
+   - Windows: `C:\Tools\ei-fragment-calculator\`
+   - macOS/Linux: `~/tools/ei-fragment-calculator/`
+2. Open a terminal and `cd` into that folder.
 
-```bat
-install.bat
+### Option B - from GitHub (git required)
+```bash
+git clone https://github.com/joriener/ei-fragment-calculator.git
+cd ei-fragment-calculator
 ```
-
-The script will:
-1. Check that Python 3.10+ is installed and in PATH
-2. Upgrade `pip`, `setuptools`, and `wheel`
-3. Install `ei-fragment-calculator` via `pip install -e .`
-4. Verify the `ei-fragment-calc` command is reachable
-5. Print a quick-start summary
-
-If everything succeeds you will see:
-
-```
-[OK] Python version is compatible.
-[OK] pip is available.
-[OK] pip and setuptools are up to date.
-[OK] Package installed successfully.
-[OK] Command 'ei-fragment-calc' is ready.
-```
-
-### Troubleshooting the installer
-
-| Problem | Fix |
-|---|---|
-| `Python was not found in PATH` | Re-install Python with "Add to PATH" ticked, then restart the command prompt |
-| `Python 3.10+ required. Found 3.9.x` | Download a newer Python from python.org |
-| `pip is not available` | Run `python -m ensurepip --upgrade` |
-| Installation failed (permissions) | Right-click `install.bat` → *Run as Administrator*, or install to user directory: `pip install --user -e .` |
-| `ei-fragment-calc` not found after install | See note below |
-
-> **If `ei-fragment-calc` is not found in PATH after installation:**
-> Python's `Scripts\` folder is sometimes not added to PATH automatically.
-> You can always run the tool as a module:
-> ```
-> python -m ei_fragment_calculator.cli  your_spectra.sdf
-> ```
-> Or add the Scripts folder to PATH manually:
-> `C:\Users\<YourName>\AppData\Local\Programs\Python\Python311\Scripts\`
 
 ---
 
-## Step 4 — Verify (optional)
+## Step 3 - Install the package
 
-Run the built-in test suite to confirm everything works:
+Run this once inside the project folder:
 
-```bat
+```bash
+pip install -e .
+```
+
+For development (includes pytest for running tests):
+```bash
 pip install -e ".[dev]"
-pytest
 ```
 
-Expected: **68 passed** in < 1 second.
+> **Windows note:** if `pip` is not recognised, try `python -m pip install -e .`
+
+### What this does
+- Registers `ei-fragment-calc` and `ei-enrich-sdf` as system-wide commands
+- No files are copied - the source folder is used directly (editable install)
 
 ---
 
-## How to Run
+## Step 4 - Verify the installation
 
-### Quick reference
+Run the included requirements checker:
+
+```bash
+python scripts/check_requirements.py
+```
+
+Expected output ends with:
+```
+All required checks passed.  You can run:
+
+    ei-fragment-calc  your_spectrum.sdf  --best-only --isotope
+    ei-enrich-sdf     your_spectrum.sdf
+```
+
+---
+
+## Step 5 - Optional packages
+
+Install these to unlock extra features:
+
+| Package | Feature | Install |
+|---|---|---|
+| `matplotlib` | Workflow diagram (`scripts/generate_workflow_image.py`) | `pip install matplotlib` |
+| `splashpy` | SPLASH spectral hash in `ei-enrich-sdf` | `pip install splashpy` |
+
+---
+
+## Running the tools
+
+### Calculate exact masses for every peak
 
 ```bat
-REM  Run on the included Caffeine example (writes Caffeine-EXACT.sdf)
-ei-fragment-calc Spectra\Caffeine.sdf
+ei-fragment-calc  your_spectrum.sdf  --best-only --isotope
+```
 
-REM  Best candidate per peak + isotope patterns (recommended)
-ei-fragment-calc Spectra\Caffeine.sdf --best-only --isotope
+Output is printed to the terminal **and** saved as `your_spectrum-EXACT.sdf`
+next to the input file.  Add `--no-save-sdf` to suppress the SDF output.
 
-REM  Your own spectra file
-ei-fragment-calc path\to\your_spectra.sdf --best-only --isotope
-
-REM  Save text output to a file as well
-ei-fragment-calc your_spectra.sdf --best-only --output results.txt
-
-REM  Show all available options
+Full option reference:
+```bat
 ei-fragment-calc --help
 ```
 
-### What happens when you run it
-
-1. The tool reads your SDF file — finds the molecular formula and the peak list.
-2. For each nominal m/z peak it enumerates all formula combinations within the parent formula and applies filters.
-3. Results are printed to the terminal.
-4. A file `<your_spectra>-EXACT.sdf` is written automatically beside the input file.
-
-### The output SDF (`*-EXACT.sdf`)
-
-The output is an SDF file with **exactly the same structure as the input** — one record per compound, same MOL block, all original fields preserved. Only two fields are changed:
-
-- `MASS SPECTRAL PEAKS` — nominal integer m/z values are replaced by exact monoisotopic masses (6 decimal places). Peaks with no valid candidate are removed.
-- `NUM PEAKS` — updated to the new peak count.
-
-**Example (Caffeine):**
-
-| Field | Input | Output |
-|---|---|---|
-| `NUM PEAKS` | 90 | 42 |
-| `MASS SPECTRAL PEAKS` | `194 999` | `194.079827 999` |
-| MOL block | unchanged | unchanged |
-| All other fields | unchanged | unchanged |
-
----
-
-## Input SDF Requirements
-
-Your SDF must contain at minimum:
-
-1. A **molecular formula** field — recognised field names (case-insensitive):
-   `FORMULA`, `MOLECULAR FORMULA`, `MF`, `SUMFORMULA`, `SUMMENFORMEL`, …
-
-2. A **mass spectral peaks** field — recognised field names:
-   `MASS SPECTRAL PEAKS`, `MS_PEAKS`, `PEAK LIST`, `SPECTRUM`, `EI MASS SPECTRUM`, …
-
-Peak data can be one pair per line or all on one line:
-```
-> <MASS SPECTRAL PEAKS>
-51 100
-77 999
-105 850
-```
-or:
-```
-> <MASS SPECTRAL PEAKS>
-51 100 77 999 105 850
-```
-
-If a field name in your file is not recognised, open an issue on GitHub or add it to the `PEAK_FIELD_CANDIDATES` list in `ei_fragment_calculator/constants.py`.
-
----
-
-## Uninstall
+### Enrich an SDF file with database metadata
 
 ```bat
+ei-enrich-sdf  your_spectrum.sdf
+```
+
+Queries PubChem, ChEBI, KEGG, and HMDB to add missing fields (FORMULA, MW,
+INCHI, INCHIKEY, SMILES, CAS, SYNONYMS, CHEBI, KEGG, HMDB, EXACT MASS).
+Writes `your_spectrum-ENRICHED.sdf`.
+
+```bat
+ei-enrich-sdf  your_spectrum.sdf  --no-hmdb --no-kegg   # skip slower sources
+ei-enrich-sdf  your_spectrum.sdf  --output  output.sdf  # custom output path
+ei-enrich-sdf  --help
+```
+
+> **Note:** `ei-enrich-sdf` requires an internet connection. Fields that are
+> already present in the SDF are never overwritten (use `--overwrite` to
+> change this).
+
+### Typical workflow
+
+```
+your_spectrum.sdf           (from instrument / ChemVista / NIST)
+        |
+        +-- ei-enrich-sdf   ->   your_spectrum-ENRICHED.sdf
+        |       (adds: FORMULA, CAS, SMILES, INCHI, CHEBI, KEGG, HMDB ...)
+        |
+        +-- ei-fragment-calc --best-only --isotope
+                (input from enriched SDF)
+                ->   your_spectrum-EXACT.sdf
+                        (exact masses in MASS SPECTRAL PEAKS)
+```
+
+---
+
+## Running the tests
+
+```bash
+pytest
+```
+
+Expected: `68 passed` in under 1 second.
+
+---
+
+## Uninstalling
+
+```bash
 pip uninstall ei-fragment-calculator
 ```
 
 ---
 
-## GitHub
+## Troubleshooting
 
-Source code, issues, updates:
-**https://github.com/joriener/ei-fragment-calculator**
+| Problem | Solution |
+|---|---|
+| `ei-fragment-calc: command not found` | Run `pip install -e .` from the project folder |
+| `ModuleNotFoundError: No module named 'ei_fragment_calculator'` | Same as above |
+| `FileNotFoundError: data/elements.csv` | Ensure you run from or after installing from the correct folder |
+| API timeouts in `ei-enrich-sdf` | Use `--delay 1.0` to slow down requests; check internet |
+| `pip` not found | Use `python -m pip` instead |
+| Python 3.9 or older | Upgrade Python; the tool requires >= 3.10 |

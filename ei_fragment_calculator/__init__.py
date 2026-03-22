@@ -26,8 +26,10 @@ from .filters    import (FilterConfig, run_all_filters, rank_candidates,
                          score_isotope_match, apply_smiles_constraints)
 from .mol_parser import parse_mol_block, extract_mol_block, MolInfo
 from .sdf_writer import write_exact_masses_sdf, write_exact_sdf, exact_sdf_path
+from .enrich     import (EnrichConfig, enrich_record, enrich_records,
+                         query_pubchem, query_chebi, query_kegg, query_hmdb)
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __author__  = "Your Name"
 __license__ = "MIT"
 
@@ -61,4 +63,11 @@ __all__ = [
     "write_exact_masses_sdf",
     "write_exact_sdf",
     "exact_sdf_path",
+    "EnrichConfig",
+    "enrich_record",
+    "enrich_records",
+    "query_pubchem",
+    "query_chebi",
+    "query_kegg",
+    "query_hmdb",
 ]
