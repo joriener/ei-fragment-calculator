@@ -89,6 +89,7 @@ _FACTORY: dict = {
     "no_smiles":       False,
     "isotope_tolerance": 30.0,
     "max_ring_ratio":  0.5,
+    "workers":         os.cpu_count() or 1,
     "last_input_dir":  "",
     "last_output_dir": "",
     # enricher
@@ -311,11 +312,21 @@ class _CalcTab(ttk.Frame):
         opt = ttk.LabelFrame(self, text=" Main Options ", padding=8)
         opt.pack(fill=tk.X, pady=(0, 6))
 
-        # Row 0 — tolerance
+        # Row 0 — tolerance + workers
         r0 = ttk.Frame(opt); r0.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(r0, text="Tolerance ±Da:").pack(side=tk.LEFT)
         self._tol = tk.StringVar()
-        _spin(r0, self._tol, 0.1, 2.0, 0.1).pack(side=tk.LEFT, padx=(4, 30))
+        _spin(r0, self._tol, 0.1, 2.0, 0.1).pack(side=tk.LEFT, padx=(4, 24))
+
+        ttk.Label(r0, text="Workers:").pack(side=tk.LEFT)
+        self._workers = tk.StringVar()
+        w_spin = _spin(r0, self._workers, 1, os.cpu_count() or 1, 1)
+        w_spin.pack(side=tk.LEFT, padx=(4, 4))
+        _tooltip(w_spin,
+            "Parallel CPU workers (default = all cores). "
+            "Set to 1 to disable multiprocessing.")
+        ttk.Label(r0, text="/ {} cores".format(os.cpu_count() or 1),
+                  foreground="#888888").pack(side=tk.LEFT, padx=(0, 24))
 
         ttk.Label(r0, text="Electron-mass correction:").pack(side=tk.LEFT)
         self._elec = tk.StringVar()
@@ -438,6 +449,7 @@ class _CalcTab(ttk.Frame):
         self._no_sm.set(s["no_smiles"])
         self._iso_tol.set(str(s["isotope_tolerance"]))
         self._ring.set(str(s["max_ring_ratio"]))
+        self._workers.set(str(s["workers"]))
 
     def _save_defaults(self) -> None:
         try:
@@ -455,6 +467,7 @@ class _CalcTab(ttk.Frame):
             s["no_smiles"]        = self._no_sm.get()
             s["isotope_tolerance"]= float(self._iso_tol.get())
             s["max_ring_ratio"]   = float(self._ring.get())
+            s["workers"]          = max(1, int(float(self._workers.get())))
             s.save()
             self._status.set("Defaults saved.")
         except Exception as exc:
@@ -556,6 +569,7 @@ class _CalcTab(ttk.Frame):
         if self._no_ls.get():      argv.append("--no-lewis-senior")
         if self._no_is.get():      argv.append("--no-isotope-score")
         if self._no_sm.get():      argv.append("--no-smiles-constraints")
+        argv += ["--workers", str(max(1, int(float(self._workers.get()))))]
         if out_sdf:                argv += ["--output-sdf", out_sdf]
         if log_file:               argv += ["--output", log_file]
 
