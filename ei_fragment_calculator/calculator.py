@@ -21,6 +21,7 @@ The ``electron_mode`` parameter accepts:
     ``"none"``    no electron-mass correction
 """
 
+import math
 from itertools import product as cartesian_product
 from typing import Optional
 from .constants import MONOISOTOPIC_MASSES, VALENCE, ELECTRON_MASS
@@ -163,47 +164,87 @@ def find_fragment_candidates(
     max_counts = [parent_composition[el] for el in elements]
     candidates: list[dict] = []
 
-    for counts in cartesian_product(*(range(n + 1) for n in max_counts)):
+    if not elements:
+        return candidates
 
-        composition = {
-            el: cnt
-            for el, cnt in zip(elements, counts)
-            if cnt > 0
-        }
+    # ------------------------------------------------------------------
+    # Analytical last-element optimisation
+    # ------------------------------------------------------------------
+    # Sort elements so the one with the highest atom count is *last*.
+    # Instead of iterating over all its possible counts we solve for the
+    # required count directly from the mass constraint, reducing the
+    # inner loop from O(max_count_last) to O(1) or O(2).
+    order      = sorted(range(len(elements)), key=lambda i: max_counts[i])
+    elements   = [elements[i]   for i in order]
+    max_counts = [max_counts[i] for i in order]
 
-        if not composition:
-            continue
+    last_el    = elements[-1]
+    last_mass  = MONOISOTOPIC_MASSES[last_el]
+    last_max   = max_counts[-1]
+    front_els  = elements[:-1]
+    front_max  = max_counts[:-1]
+    front_masses = [MONOISOTOPIC_MASSES[el] for el in front_els]
 
-        # --- mass window filter ---
-        neutral  = exact_mass(composition)
-        measured = ion_mass(neutral, electron_mode)
-        delta    = measured - nominal_mz
+    # Target *neutral* mass that would place the ion within ±tolerance
+    if electron_mode == "remove":
+        target = nominal_mz + ELECTRON_MASS
+    elif electron_mode == "add":
+        target = nominal_mz - ELECTRON_MASS
+    else:
+        target = float(nominal_mz)
 
-        if abs(delta) > tolerance:
-            continue
+    for front_counts in cartesian_product(*(range(n + 1) for n in front_max)):
 
-        # --- DBE filter ---
-        dbe = calculate_dbe(composition)
-        if not is_valid_dbe(dbe):
-            continue
+        partial   = sum(c * m for c, m in zip(front_counts, front_masses))
+        remaining = target - partial
 
-        entry: dict = {
-            "formula":       hill_formula(composition),
-            "neutral_mass":  round(neutral, 6),
-            "ion_mass":      round(measured, 6),
-            "delta_mass":    round(delta, 6),
-            "dbe":           dbe,
-            "electron_mode": electron_mode,
-            "_composition":  composition,   # needed by filter pipeline
-        }
+        # Solve: last_count * last_mass ≈ remaining  (within ±tolerance)
+        lo = max(0, math.ceil( (remaining - tolerance) / last_mass))
+        hi = min(last_max, math.floor((remaining + tolerance) / last_mass))
 
-        # --- optional isotope pattern ---
-        if include_isotope_pattern:
-            pattern = isotope_pattern(composition)
-            entry["isotope_pattern"] = pattern
-            entry["isotope_summary"] = pattern_summary(pattern)
+        for last_count in range(lo, hi + 1):
 
-        candidates.append(entry)
+            composition = {
+                el: cnt
+                for el, cnt in zip(front_els, front_counts)
+                if cnt > 0
+            }
+            if last_count > 0:
+                composition[last_el] = last_count
+
+            if not composition:
+                continue
+
+            # --- mass window filter (exact check after analytical pre-filter) ---
+            neutral  = exact_mass(composition)
+            measured = ion_mass(neutral, electron_mode)
+            delta    = measured - nominal_mz
+
+            if abs(delta) > tolerance:
+                continue
+
+            # --- DBE filter ---
+            dbe = calculate_dbe(composition)
+            if not is_valid_dbe(dbe):
+                continue
+
+            entry: dict = {
+                "formula":       hill_formula(composition),
+                "neutral_mass":  round(neutral, 6),
+                "ion_mass":      round(measured, 6),
+                "delta_mass":    round(delta, 6),
+                "dbe":           dbe,
+                "electron_mode": electron_mode,
+                "_composition":  composition,   # needed by filter pipeline
+            }
+
+            # --- optional isotope pattern ---
+            if include_isotope_pattern:
+                pattern = isotope_pattern(composition)
+                entry["isotope_pattern"] = pattern
+                entry["isotope_summary"] = pattern_summary(pattern)
+
+            candidates.append(entry)
 
     candidates.sort(key=lambda x: x["ion_mass"])
 

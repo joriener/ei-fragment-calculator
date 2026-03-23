@@ -33,3 +33,6 @@ Thumbs.db
 *.txt
 !examples/
 nist_ri.SDF
+
+# Installer build output
+installer_output/

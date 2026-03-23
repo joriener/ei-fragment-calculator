@@ -26,8 +26,10 @@ Usage examples
     ei-fragment-calc spectra.sdf --best-only
 """
 
+import os
 import sys
 import argparse
+import multiprocessing as mp
 from .formula     import parse_formula, hill_formula
 from .calculator  import exact_mass, ion_mass, calculate_dbe, find_fragment_candidates
 from .sdf_parser  import parse_sdf, get_formula_and_peaks
@@ -233,6 +235,33 @@ def format_record(
     return "\n".join(lines)
 
 
+def _process_record(args: tuple) -> tuple[str, list]:
+    """
+    Top-level picklable worker used by multiprocessing.Pool.
+
+    Parameters mirror format_record() kwargs, packed as a tuple so
+    pool.map() can call this with a single iterable argument.
+
+    Returns
+    -------
+    (output_text, sdf_results_for_this_record)
+    """
+    record, tolerance, electron_mode, hide_empty, show_isotope, \
+        best_only, filter_config, save_sdf = args
+    local_sdf: list = [] if save_sdf else None
+    text = format_record(
+        record,
+        tolerance=tolerance,
+        electron_mode=electron_mode,
+        hide_empty=hide_empty,
+        show_isotope=show_isotope,
+        best_only=best_only,
+        filter_config=filter_config,
+        sdf_results=local_sdf,
+    )
+    return text, local_sdf
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -361,6 +390,16 @@ examples:
             "'<input>-EXACT.sdf' path next to the input file."
         ),
     )
+    parser.add_argument(
+        "--workers", "-w",
+        type=int,
+        default=os.cpu_count() or 1,
+        metavar="N",
+        help=(
+            "Number of parallel worker processes (default: all CPU cores). "
+            "Set to 1 to disable multiprocessing."
+        ),
+    )
 
     return parser
 
@@ -430,18 +469,41 @@ def main(argv: list[str] | None = None) -> None:
     save_sdf = not args.no_save_sdf
     all_sdf_results: list = [] if save_sdf else None
 
-    for record in records:
-        output = format_record(
+    workers = max(1, args.workers)
+    worker_args = [
+        (
             record,
-            tolerance=args.tolerance,
-            electron_mode=args.electron_mode,
-            hide_empty=args.hide_empty,
-            show_isotope=args.isotope,
-            best_only=args.best_only,
-            filter_config=filter_cfg,
-            sdf_results=all_sdf_results,
+            args.tolerance,
+            args.electron_mode,
+            args.hide_empty,
+            args.isotope,
+            args.best_only,
+            filter_cfg,
+            save_sdf,
         )
-        print(output)
+        for record in records
+    ]
+
+    if workers == 1 or len(records) == 1:
+        # ── Sequential path (also used when --workers 1) ─────────────────
+        for wa in worker_args:
+            text, sdf_part = _process_record(wa)
+            print(text)
+            if save_sdf and sdf_part:
+                all_sdf_results.extend(sdf_part)
+    else:
+        # ── Parallel path ─────────────────────────────────────────────────
+        # Cap workers to number of records (no point spawning more)
+        workers = min(workers, len(records))
+        print("Processing {} record(s) on {} worker(s)...\n".format(
+            len(records), workers))
+        with mp.Pool(processes=workers) as pool:
+            results = pool.map(_process_record, worker_args)
+        # Merge in original order so output is deterministic
+        for text, sdf_part in results:
+            print(text)
+            if save_sdf and sdf_part:
+                all_sdf_results.extend(sdf_part)
 
     if args.output:
         sys.stdout.close()

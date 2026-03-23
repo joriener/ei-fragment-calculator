@@ -39,8 +39,6 @@ AllowNoIcons=yes
 ; Output
 OutputDir=installer_output
 OutputBaseFilename=EI-Fragment-Calculator-v{#AppVersion}-Setup
-SetupIconFile=docs\icon.ico
-; ^ Remove the line above if you don't have docs\icon.ico
 
 ; Compression
 Compression=lzma2/ultra64

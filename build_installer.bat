@@ -55,7 +55,23 @@ if errorlevel 1 (
 for /f "tokens=*" %%v in ('python -c "import PyInstaller; print(PyInstaller.__version__)" 2^>^&1') do echo         PyInstaller %%v found.
 echo.
 
-REM ── 4. Find Inno Setup ───────────────────────────────────────────────────
+REM ── 4. Install optional packages (bundled into the frozen app) ───────────
+echo [prep]  Installing optional packages so they are bundled in the app...
+echo         sdf-enricher  (SDF Enricher tab)
+echo         splashpy      (SPLASH spectral hash)
+echo         matplotlib    (workflow diagram)
+echo         pytest        (test suite)
+echo.
+pip install sdf-enricher splashpy matplotlib pytest --quiet
+if errorlevel 1 (
+    echo WARNING: One or more optional packages failed to install.
+    echo          The build will continue — affected features will be unavailable.
+    echo.
+)
+echo         Optional packages installed.
+echo.
+
+REM ── 6. Find Inno Setup ───────────────────────────────────────────────────
 echo [check] Inno Setup 6...
 set "ISCC="
 for %%p in (
@@ -83,7 +99,7 @@ pause & exit /b 1
 echo         Found: !ISCC!
 echo.
 
-REM ── 5. Clean previous build ──────────────────────────────────────────────
+REM ── 7. Clean previous build ──────────────────────────────────────────────
 echo [clean] Removing previous dist\ei-fragment-gui ...
 if exist "dist\ei-fragment-gui" (
     rmdir /s /q "dist\ei-fragment-gui"
@@ -91,7 +107,7 @@ if exist "dist\ei-fragment-gui" (
 echo         Done.
 echo.
 
-REM ── 6. PyInstaller — freeze the application ──────────────────────────────
+REM ── 8. PyInstaller — freeze the application ──────────────────────────────
 echo [1/2] Freezing application with PyInstaller...
 echo       (this may take 1-3 minutes on first run)
 echo.
@@ -114,10 +130,10 @@ echo         PyInstaller build complete.
 echo         Application directory: dist\ei-fragment-gui\
 echo.
 
-REM ── 7. Create output directory ────────────────────────────────────────────
+REM ── 9. Create output directory ────────────────────────────────────────────
 if not exist "installer_output" mkdir "installer_output"
 
-REM ── 8. Inno Setup — compile the installer ────────────────────────────────
+REM ── 10. Inno Setup — compile the installer ───────────────────────────────
 echo [2/2] Compiling Windows installer with Inno Setup...
 echo.
 
@@ -149,7 +165,7 @@ if errorlevel 1 (
 
 if exist "installer_noicon.iss" del "installer_noicon.iss"
 
-REM ── 9. Done ───────────────────────────────────────────────────────────────
+REM ── 11. Done ──────────────────────────────────────────────────────────────
 echo.
 echo ================================================================
 echo   Build complete!
