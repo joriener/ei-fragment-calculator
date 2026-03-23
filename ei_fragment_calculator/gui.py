@@ -90,6 +90,7 @@ _FACTORY: dict = {
     "isotope_tolerance": 30.0,
     "max_ring_ratio":  0.5,
     "workers":         1,
+    "fetch_structures": False,
     "last_input_dir":  "",
     "last_output_dir": "",
     # enricher
@@ -341,10 +342,11 @@ class _CalcTab(ttk.Frame):
 
         # Row 1 — toggles
         r1 = ttk.Frame(opt); r1.pack(fill=tk.X, pady=(0, 4))
-        self._best_only  = tk.BooleanVar()
-        self._hide_empty = tk.BooleanVar()
-        self._show_iso   = tk.BooleanVar()
-        self._no_sdf     = tk.BooleanVar()
+        self._best_only       = tk.BooleanVar()
+        self._hide_empty      = tk.BooleanVar()
+        self._show_iso        = tk.BooleanVar()
+        self._no_sdf          = tk.BooleanVar()
+        self._fetch_structures = tk.BooleanVar()
         for var, lbl, tip in [
             (self._best_only,  "Best-only",
              "Keep only the highest-ranked candidate per peak; drop unmatched peaks"),
@@ -354,6 +356,9 @@ class _CalcTab(ttk.Frame):
              "Display theoretical M / M+1 / M+2 percentages for every candidate"),
             (self._no_sdf,     "Skip SDF output",
              "Do not write the *-EXACT.sdf output file"),
+            (self._fetch_structures, "Fetch structures (PubChem)",
+             "For records with no 2-D structure, query PubChem by CAS/name "
+             "and add the MOL block to the output SDF. Requires internet."),
         ]:
             cb = ttk.Checkbutton(r1, text=lbl, variable=var)
             cb.pack(side=tk.LEFT, padx=(0, 16))
@@ -442,6 +447,7 @@ class _CalcTab(ttk.Frame):
         self._hide_empty.set(s["hide_empty"])
         self._show_iso.set(s["show_isotope"])
         self._no_sdf.set(s["no_save_sdf"])
+        self._fetch_structures.set(s["fetch_structures"])
         self._no_n.set(s["no_nitrogen"])
         self._no_hd.set(s["no_hd"])
         self._no_ls.set(s["no_lewis"])
@@ -460,6 +466,7 @@ class _CalcTab(ttk.Frame):
             s["hide_empty"]       = self._hide_empty.get()
             s["show_isotope"]     = self._show_iso.get()
             s["no_save_sdf"]      = self._no_sdf.get()
+            s["fetch_structures"] = self._fetch_structures.get()
             s["no_nitrogen"]      = self._no_n.get()
             s["no_hd"]            = self._no_hd.get()
             s["no_lewis"]         = self._no_ls.get()
@@ -563,8 +570,9 @@ class _CalcTab(ttk.Frame):
         if self._best_only.get():  argv.append("--best-only")
         if self._hide_empty.get(): argv.append("--hide-empty")
         if self._show_iso.get():   argv.append("--isotope")
-        if self._no_sdf.get():     argv.append("--no-save-sdf")
-        if self._no_n.get():       argv.append("--no-nitrogen-rule")
+        if self._no_sdf.get():              argv.append("--no-save-sdf")
+        if self._fetch_structures.get():    argv.append("--fetch-structures")
+        if self._no_n.get():               argv.append("--no-nitrogen-rule")
         if self._no_hd.get():      argv.append("--no-hd-check")
         if self._no_ls.get():      argv.append("--no-lewis-senior")
         if self._no_is.get():      argv.append("--no-isotope-score")

@@ -415,6 +415,17 @@ examples:
             "Set to 1 to disable multiprocessing."
         ),
     )
+    parser.add_argument(
+        "--fetch-structures",
+        action="store_true",
+        default=False,
+        help=(
+            "For records with no 2-D structure (atom count = 0), query PubChem "
+            "by CAS number / compound name and insert the fetched MOL block into "
+            "the output SDF.  Requires an internet connection.  Rate-limited to "
+            "≤5 requests/second per PubChem guidelines."
+        ),
+    )
 
     return parser
 
@@ -461,6 +472,29 @@ def main(argv: list[str] | None = None) -> None:
     if not records:
         print("[ERROR] No records found in the SDF file.", file=sys.stderr)
         sys.exit(1)
+
+    # ── Optional: fetch 2-D structures from PubChem ──────────────────────────
+    if args.fetch_structures:
+        from .structure_fetcher import enrich_mol_blocks, _mol_block_has_atoms
+        missing = sum(
+            1 for r in records if not _mol_block_has_atoms(r.get("mol_block", ""))
+        )
+        if missing:
+            print(
+                "Fetching 2-D structures from PubChem for {} / {} record(s) "
+                "with no structure...\n".format(missing, len(records)),
+                flush=True,
+            )
+            def _struct_progress(done, total, name):
+                print(
+                    "  [{}/{}] {}".format(done, total, name or "(unnamed)"),
+                    flush=True,
+                )
+            enrich_mol_blocks(records, progress_callback=_struct_progress)
+            print("Structure fetch complete.\n", flush=True)
+        else:
+            print("All records already have 2-D structures — skipping fetch.\n",
+                  flush=True)
 
     electron_desc = {
         "remove": "positive-ion EI  (m/z = M_neutral - m_e)",
