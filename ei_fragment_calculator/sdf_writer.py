@@ -149,27 +149,33 @@ def write_exact_masses_sdf(results: list, output_path: str) -> int:
     -------
     int  Number of SDF records written.
     """
-    # ---- Group results by compound (preserve input order) ----------------
-    compound_order: list[str] = []
-    compounds: dict[str, dict] = {}
+    # ---- Group results by record_index (preserve input order) --------------
+    # Grouping by compound name is unreliable — many SDF files contain
+    # records whose MOL-block name is a placeholder like "No Structure",
+    # which would cause all such records to be merged into one.
+    # record_index (0-based position in the input file) is always unique.
+    compound_order: list[int] = []
+    compounds: dict[int, dict] = {}
 
     for result in results:
-        name = result["compound_name"]
-        if name not in compounds:
-            compound_order.append(name)
-            compounds[name] = {
-                "mol_block": result.get("mol_block", ""),
-                "fields":    dict(result["fields"]),
-                "peaks":     defaultdict(list),   # nominal_mz -> [candidates]
+        key = result.get("record_index", id(result))   # fallback for old data
+        if key not in compounds:
+            compound_order.append(key)
+            compounds[key] = {
+                "mol_block":     result.get("mol_block", ""),
+                "fields":        dict(result["fields"]),
+                "compound_name": result["compound_name"],
+                "peaks":         defaultdict(list),   # nominal_mz -> [candidates]
             }
-        compounds[name]["peaks"][result["peak_mz"]].append(result["candidate"])
+        compounds[key]["peaks"][result["peak_mz"]].append(result["candidate"])
 
     # ---- Write one record per compound -----------------------------------
     records_written = 0
 
     with open(output_path, "w", encoding="utf-8") as fh:
-        for name in compound_order:
-            data     = compounds[name]
+        for key in compound_order:
+            data     = compounds[key]
+            name     = data["compound_name"]
             fields   = data["fields"]
             mol_blk  = data["mol_block"]
             peaks_by_mz = data["peaks"]

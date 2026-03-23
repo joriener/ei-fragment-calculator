@@ -50,6 +50,7 @@ def format_record(
     best_only: bool = False,
     filter_config=None,
     sdf_results: list = None,
+    record_index: int = 0,
 ) -> str:
     """
     Process one SDF record and return the formatted result string.
@@ -65,8 +66,20 @@ def format_record(
                                 peak and skip peaks where that candidate fails filters
     filter_config : FilterConfig | None  If provided, run filter pipeline
     sdf_results   : list | None  If provided, append SDF result dicts here
+    record_index  : int         Position of this record in the input file (0-based).
+                                Used as a unique key in the SDF writer so that
+                                records sharing a MOL-block name (e.g. "No Structure")
+                                are never merged together.
     """
-    name  = record["name"] or "(unnamed compound)"
+    # Prefer the <NAME> SDF data field over the MOL-block first line so that
+    # records whose MOL block starts with "No Structure" still display the
+    # correct compound name (e.g. "Aniline").
+    from .sdf_parser import find_field as _find_field
+    name = (
+        _find_field(record.get("fields", {}), ["NAME", "COMPOUND NAME", "COMPOUND_NAME"])
+        or record["name"]
+        or "(unnamed compound)"
+    )
     lines: list[str] = []
 
     formula_str, nominal_mzs = get_formula_and_peaks(record)
@@ -148,6 +161,7 @@ def format_record(
                     "mol_block":     mol_block,
                     "fields":        original_fields,
                     "compound_name": name,
+                    "record_index":  record_index,
                     "peak_mz":       mz,
                     "candidate":     c,
                 })
@@ -247,7 +261,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
     (output_text, sdf_results_for_this_record)
     """
     record, tolerance, electron_mode, hide_empty, show_isotope, \
-        best_only, filter_config, save_sdf = args
+        best_only, filter_config, save_sdf, record_index = args
     local_sdf: list = [] if save_sdf else None
     text = format_record(
         record,
@@ -258,6 +272,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
         best_only=best_only,
         filter_config=filter_config,
         sdf_results=local_sdf,
+        record_index=record_index,
     )
     return text, local_sdf
 
@@ -486,8 +501,9 @@ def main(argv: list[str] | None = None) -> None:
             args.best_only,
             filter_cfg,
             save_sdf,
+            idx,
         )
-        for record in records
+        for idx, record in enumerate(records)
     ]
 
     total = len(records)
