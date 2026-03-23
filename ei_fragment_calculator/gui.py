@@ -89,7 +89,7 @@ _FACTORY: dict = {
     "no_smiles":       False,
     "isotope_tolerance": 30.0,
     "max_ring_ratio":  0.5,
-    "workers":         os.cpu_count() or 1,
+    "workers":         1,
     "last_input_dir":  "",
     "last_output_dir": "",
     # enricher

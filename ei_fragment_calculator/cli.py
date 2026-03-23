@@ -406,6 +406,12 @@ examples:
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the ``ei-fragment-calc`` command."""
+    # On Windows, freeze_support() must be called before any Pool is created
+    # so that frozen-app worker processes act as workers rather than
+    # re-launching the full application (which would cause a cascade of new
+    # windows). It is a no-op on non-Windows and in non-frozen environments.
+    mp.freeze_support()
+
     # Run environment checks before anything else so the user gets a clear
     # error message if Python is too old or the data CSV is missing.
     run_preflight_checks()
