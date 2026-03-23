@@ -484,26 +484,29 @@ def main(argv: list[str] | None = None) -> None:
         for record in records
     ]
 
-    if workers == 1 or len(records) == 1:
-        # ── Sequential path (also used when --workers 1) ─────────────────
-        for wa in worker_args:
+    total = len(records)
+
+    if workers == 1 or total == 1:
+        # ── Sequential path ───────────────────────────────────────────────
+        for i, wa in enumerate(worker_args, 1):
             text, sdf_part = _process_record(wa)
-            print(text)
+            print(text, flush=True)
+            print("[{}/{}] done".format(i, total), flush=True)
             if save_sdf and sdf_part:
                 all_sdf_results.extend(sdf_part)
     else:
         # ── Parallel path ─────────────────────────────────────────────────
-        # Cap workers to number of records (no point spawning more)
-        workers = min(workers, len(records))
+        workers = min(workers, total)
         print("Processing {} record(s) on {} worker(s)...\n".format(
-            len(records), workers))
+            total, workers), flush=True)
         with mp.Pool(processes=workers) as pool:
-            results = pool.map(_process_record, worker_args)
-        # Merge in original order so output is deterministic
-        for text, sdf_part in results:
-            print(text)
-            if save_sdf and sdf_part:
-                all_sdf_results.extend(sdf_part)
+            # imap preserves order and yields results as each worker finishes
+            for i, (text, sdf_part) in enumerate(
+                    pool.imap(_process_record, worker_args), 1):
+                print(text, flush=True)
+                print("[{}/{}] done".format(i, total), flush=True)
+                if save_sdf and sdf_part:
+                    all_sdf_results.extend(sdf_part)
 
     if args.output:
         sys.stdout.close()
