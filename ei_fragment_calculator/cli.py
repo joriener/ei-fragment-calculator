@@ -37,7 +37,7 @@ from .isotope     import isotope_pattern, pattern_summary
 from .constants   import ELECTRON_MASS
 from .preflight   import run_preflight_checks
 from .filters     import FilterConfig, rank_candidates
-from .mol_parser  import parse_mol_block, extract_mol_block
+from .mol_parser  import parse_mol_block, extract_mol_block, parse_mol_block_full
 from .sdf_writer  import write_exact_masses_sdf, exact_sdf_path
 
 
@@ -51,6 +51,8 @@ def format_record(
     filter_config=None,
     sdf_results: list = None,
     record_index: int = 0,
+    ppm: float = None,
+    fragmentation_rules: bool = False,
 ) -> str:
     """
     Process one SDF record and return the formatted result string.
@@ -70,6 +72,10 @@ def format_record(
                                 Used as a unique key in the SDF writer so that
                                 records sharing a MOL-block name (e.g. "No Structure")
                                 are never merged together.
+    ppm           : float|None  If set, use ppm-based per-peak tolerance instead
+                                of the fixed Da tolerance.
+    fragmentation_rules : bool  If True, annotate candidates with EI fragmentation
+                                rules (neutral losses and structure-based cleavages).
     """
     # Prefer the <NAME> SDF data field over the MOL-block first line so that
     # records whose MOL block starts with "No Structure" still display the
@@ -126,7 +132,10 @@ def format_record(
     )
     if show_isotope and parent_iso_str:
         lines.append("Isotope pattern : {}".format(parent_iso_str))
-    lines.append("Tolerance       : \u00b1{} Da".format(tolerance))
+    if ppm is not None:
+        lines.append("Tolerance       : \u00b1{} ppm (per-peak Da varies)".format(ppm))
+    else:
+        lines.append("Tolerance       : \u00b1{} Da".format(tolerance))
     lines.append("Peaks           : {}".format(len(nominal_mzs)))
     if best_only:
         lines.append("Mode            : best-only (top-ranked candidate per peak)")
@@ -135,12 +144,29 @@ def format_record(
     mol_block = record.get("mol_block", "")
     original_fields = record.get("fields", {})
 
+    # Tier-2 structure data (parsed once per record)
+    mol_data = None
+    if fragmentation_rules and mol_block:
+        mol_data = parse_mol_block_full(mol_block)
+
     for mz in nominal_mzs:
+        # Per-peak tolerance (ppm mode) or fixed Da
+        tol = mz * ppm / 1_000_000 if ppm is not None else tolerance
+
         candidates = find_fragment_candidates(
-            mz, parent, tolerance, electron_mode,
+            mz, parent, tol, electron_mode,
             include_isotope_pattern=show_isotope,
             filter_config=filter_config,
         )
+
+        # Fragmentation rule annotation
+        if fragmentation_rules and candidates:
+            from .fragmentation_rules import (
+                annotate_neutral_losses, get_structure_fragments, annotate_candidate,
+            )
+            nl_matches   = annotate_neutral_losses(mz, parent_neutral, parent, electron_mode, tol)
+            struct_frags = get_structure_fragments(mol_data) if mol_data else []
+            candidates   = [annotate_candidate(c, nl_matches, struct_frags) for c in candidates]
 
         # --- best-only mode: keep only the top-ranked candidate ---
         if best_only:
@@ -192,7 +218,9 @@ def format_record(
                     ) + ("  " + "-" * 6 if show_filter else "")
                 )
                 for c in candidates:
-                    flt = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
+                    flt  = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
+                    rule = c.get("fragmentation_rule", "")
+                    rule_tag = "  [{}]".format(rule) if rule else ""
                     lines.append(
                         "    {:<14}  "
                         "{:>13.6f}  "
@@ -206,7 +234,7 @@ def format_record(
                             c["delta_mass"],
                             c["dbe"],
                             c.get("isotope_summary", "\u2014"),
-                        ) + (flt if show_filter else "")
+                        ) + (flt if show_filter else "") + rule_tag
                     )
             else:
                 filter_hdr = "  FILTER" if show_filter else ""
@@ -225,7 +253,9 @@ def format_record(
                     ) + ("  " + "-" * 6 if show_filter else "")
                 )
                 for c in candidates:
-                    flt = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
+                    flt  = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
+                    rule = c.get("fragmentation_rule", "")
+                    rule_tag = "  [{}]".format(rule) if rule else ""
                     lines.append(
                         "    {:<14}  "
                         "{:>13.6f}  "
@@ -237,7 +267,7 @@ def format_record(
                             c["ion_mass"],
                             c["delta_mass"],
                             c["dbe"],
-                        ) + (flt if show_filter else "")
+                        ) + (flt if show_filter else "") + rule_tag
                     )
         else:
             lines.append(
@@ -261,7 +291,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
     (output_text, sdf_results_for_this_record)
     """
     record, tolerance, electron_mode, hide_empty, show_isotope, \
-        best_only, filter_config, save_sdf, record_index = args
+        best_only, filter_config, save_sdf, record_index, ppm, fragmentation_rules = args
     local_sdf: list = [] if save_sdf else None
     text = format_record(
         record,
@@ -273,6 +303,8 @@ def _process_record(args: tuple) -> tuple[str, list]:
         filter_config=filter_config,
         sdf_results=local_sdf,
         record_index=record_index,
+        ppm=ppm,
+        fragmentation_rules=fragmentation_rules,
     )
     return text, local_sdf
 
@@ -309,12 +341,23 @@ examples:
         "sdf_file",
         help="Path to the SDF file containing EI spectral data.",
     )
-    parser.add_argument(
+    tol_group = parser.add_mutually_exclusive_group()
+    tol_group.add_argument(
         "--tolerance", "-t",
         type=float,
-        default=0.5,
+        default=None,
         metavar="DA",
-        help="Mass window ±Da for candidate matching (default: 0.5).",
+        help="Mass window ±Da for candidate matching (default: 0.5 Da).",
+    )
+    tol_group.add_argument(
+        "--ppm",
+        type=float,
+        default=None,
+        metavar="PPM",
+        help=(
+            "Mass window in ppm — per-peak Da tolerance is computed as "
+            "mz × ppm / 1,000,000. Mutually exclusive with --tolerance."
+        ),
     )
     parser.add_argument(
         "--electron", "-e",
@@ -426,6 +469,28 @@ examples:
             "≤5 requests/second per PubChem guidelines."
         ),
     )
+    parser.add_argument(
+        "--fragmentation-rules",
+        action="store_true",
+        default=False,
+        help=(
+            "Annotate candidates with EI fragmentation rules: common neutral "
+            "losses (H2O, CO, HCl, …) and structure-based cleavages (α-cleavage, "
+            "McLafferty, i-cleavage) when a 2-D MOL block is present. "
+            "Matching candidates are labelled with the rule name in the output."
+        ),
+    )
+    parser.add_argument(
+        "--rdkit",
+        action="store_true",
+        default=False,
+        dest="rdkit_validation",
+        help=(
+            "Enable Filter 6: RDKit chemical validation — rejects candidates "
+            "whose element symbols are not recognized by the RDKit periodic table. "
+            "Requires:  pip install rdkit-pypi"
+        ),
+    )
 
     return parser
 
@@ -445,12 +510,17 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args   = parser.parse_args(argv)
 
+    # Resolve tolerance: ppm takes precedence; fall back to --tolerance or 0.5 Da
+    use_ppm = args.ppm is not None
+    tolerance = args.tolerance if args.tolerance is not None else 0.5
+
     filter_cfg = FilterConfig(
         nitrogen_rule      = not args.no_nitrogen_rule,
         hd_check           = not args.no_hd_check,
         lewis_senior       = not args.no_lewis_senior,
         isotope_score      = not args.no_isotope_score,
         smiles_constraints = not args.no_smiles_constraints,
+        rdkit_validation   = args.rdkit_validation,
         isotope_tolerance  = args.isotope_tolerance,
         max_ring_ratio     = args.max_ring_ratio,
     )
@@ -502,22 +572,30 @@ def main(argv: list[str] | None = None) -> None:
         "none":   "no correction   (m/z = M_neutral)",
     }[args.electron_mode]
 
+    tol_display = (
+        "+/-{} ppm (per-peak)".format(args.ppm) if use_ppm
+        else "+/-{} Da".format(tolerance)
+    )
     print(
         "EI Fragment Exact-Mass Calculator\n"
-        "  SDF file        : {}\n"
-        "  Records found   : {}\n"
-        "  Tolerance       : +/-{} Da\n"
-        "  Electron mode   : {}  ({})\n"
-        "  Isotope pattern : {}\n"
-        "  Best-only mode  : {}\n".format(
+        "  SDF file            : {}\n"
+        "  Records found       : {}\n"
+        "  Tolerance           : {}\n"
+        "  Electron mode       : {}  ({})\n"
+        "  Isotope pattern     : {}\n"
+        "  Best-only mode      : {}\n"
+        "  Fragmentation rules : {}\n"
+        "  RDKit validation    : {}\n".format(
             args.sdf_file,
             len(records),
-            args.tolerance,
+            tol_display,
             args.electron_mode,
             electron_desc,
             "yes" if args.isotope else "no",
             "yes (top-ranked candidate per peak; unmatched peaks dropped)"
             if args.best_only else "no",
+            "yes" if args.fragmentation_rules else "no",
+            "yes (Filter 6)" if args.rdkit_validation else "no",
         )
     )
 
@@ -528,7 +606,7 @@ def main(argv: list[str] | None = None) -> None:
     worker_args = [
         (
             record,
-            args.tolerance,
+            tolerance,
             args.electron_mode,
             args.hide_empty,
             args.isotope,
@@ -536,6 +614,8 @@ def main(argv: list[str] | None = None) -> None:
             filter_cfg,
             save_sdf,
             idx,
+            args.ppm,
+            args.fragmentation_rules,
         )
         for idx, record in enumerate(records)
     ]

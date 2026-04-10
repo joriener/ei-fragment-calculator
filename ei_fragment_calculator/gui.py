@@ -89,10 +89,14 @@ _FACTORY: dict = {
     "no_smiles":       False,
     "isotope_tolerance": 30.0,
     "max_ring_ratio":  0.5,
-    "workers":         1,
-    "fetch_structures": False,
-    "last_input_dir":  "",
-    "last_output_dir": "",
+    "workers":              1,
+    "fetch_structures":     False,
+    "ppm_mode":             False,
+    "ppm_value":            5.0,
+    "fragmentation_rules":  False,
+    "rdkit_validation":     False,
+    "last_input_dir":       "",
+    "last_output_dir":      "",
     # enricher
     "e_no_pubchem":    False,
     "e_no_chebi":      False,
@@ -313,11 +317,23 @@ class _CalcTab(ttk.Frame):
         opt = ttk.LabelFrame(self, text=" Main Options ", padding=8)
         opt.pack(fill=tk.X, pady=(0, 6))
 
-        # Row 0 — tolerance + workers
+        # Row 0 — tolerance (Da / ppm) + workers
         r0 = ttk.Frame(opt); r0.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(r0, text="Tolerance ±Da:").pack(side=tk.LEFT)
+        self._ppm_mode = tk.BooleanVar()
+        ttk.Radiobutton(r0, text="Da", variable=self._ppm_mode, value=False,
+                        command=self._on_tol_mode).pack(side=tk.LEFT)
+        ttk.Radiobutton(r0, text="ppm", variable=self._ppm_mode, value=True,
+                        command=self._on_tol_mode).pack(side=tk.LEFT, padx=(2, 6))
+        self._tol_lbl = ttk.Label(r0, text="Tolerance ±Da:")
+        self._tol_lbl.pack(side=tk.LEFT)
         self._tol = tk.StringVar()
-        _spin(r0, self._tol, 0.1, 2.0, 0.1).pack(side=tk.LEFT, padx=(4, 24))
+        self._tol_spin = _spin(r0, self._tol, 0.05, 2.0, 0.05)
+        self._tol_spin.pack(side=tk.LEFT, padx=(4, 4))
+        self._ppm_lbl = ttk.Label(r0, text="Tolerance ±ppm:")
+        self._ppm_lbl.pack(side=tk.LEFT)
+        self._ppm_val = tk.StringVar()
+        self._ppm_spin = _spin(r0, self._ppm_val, 1.0, 50.0, 1.0)
+        self._ppm_spin.pack(side=tk.LEFT, padx=(4, 24))
 
         ttk.Label(r0, text="Workers:").pack(side=tk.LEFT)
         self._workers = tk.StringVar()
@@ -342,11 +358,13 @@ class _CalcTab(ttk.Frame):
 
         # Row 1 — toggles
         r1 = ttk.Frame(opt); r1.pack(fill=tk.X, pady=(0, 4))
-        self._best_only       = tk.BooleanVar()
-        self._hide_empty      = tk.BooleanVar()
-        self._show_iso        = tk.BooleanVar()
-        self._no_sdf          = tk.BooleanVar()
-        self._fetch_structures = tk.BooleanVar()
+        self._best_only           = tk.BooleanVar()
+        self._hide_empty          = tk.BooleanVar()
+        self._show_iso            = tk.BooleanVar()
+        self._no_sdf              = tk.BooleanVar()
+        self._fetch_structures    = tk.BooleanVar()
+        self._frag_rules          = tk.BooleanVar()
+        self._rdkit_validation    = tk.BooleanVar()
         for var, lbl, tip in [
             (self._best_only,  "Best-only",
              "Keep only the highest-ranked candidate per peak; drop unmatched peaks"),
@@ -359,6 +377,12 @@ class _CalcTab(ttk.Frame):
             (self._fetch_structures, "Fetch structures (PubChem)",
              "For records with no 2-D structure, query PubChem by CAS/name "
              "and add the MOL block to the output SDF. Requires internet."),
+            (self._frag_rules, "Fragmentation rules",
+             "Annotate candidates with EI fragmentation rules: neutral losses "
+             "(H2O, CO, HCl…) and structure-based cleavages (α-cleavage, McLafferty)"),
+            (self._rdkit_validation, "RDKit validation (Filter 6)",
+             "Reject candidates with unknown element symbols via RDKit. "
+             "Requires: pip install rdkit-pypi"),
         ]:
             cb = ttk.Checkbutton(r1, text=lbl, variable=var)
             cb.pack(side=tk.LEFT, padx=(0, 16))
@@ -439,15 +463,34 @@ class _CalcTab(ttk.Frame):
 
     # ── Settings helpers ─────────────────────────────────────────────────────
 
+    def _on_tol_mode(self) -> None:
+        """Show/hide Da vs ppm spinboxes based on radio button selection."""
+        ppm = self._ppm_mode.get()
+        if ppm:
+            self._tol_lbl.pack_forget()
+            self._tol_spin.pack_forget()
+            self._ppm_lbl.pack(side=tk.LEFT)
+            self._ppm_spin.pack(side=tk.LEFT, padx=(4, 24))
+        else:
+            self._ppm_lbl.pack_forget()
+            self._ppm_spin.pack_forget()
+            self._tol_lbl.pack(side=tk.LEFT)
+            self._tol_spin.pack(side=tk.LEFT, padx=(4, 24))
+
     def _load_settings(self) -> None:
         s = self._settings
         self._tol.set(str(s["tolerance"]))
+        self._ppm_mode.set(s["ppm_mode"])
+        self._ppm_val.set(str(s["ppm_value"]))
+        self._on_tol_mode()
         self._elec.set(s["electron_mode"])
         self._best_only.set(s["best_only"])
         self._hide_empty.set(s["hide_empty"])
         self._show_iso.set(s["show_isotope"])
         self._no_sdf.set(s["no_save_sdf"])
         self._fetch_structures.set(s["fetch_structures"])
+        self._frag_rules.set(s["fragmentation_rules"])
+        self._rdkit_validation.set(s["rdkit_validation"])
         self._no_n.set(s["no_nitrogen"])
         self._no_hd.set(s["no_hd"])
         self._no_ls.set(s["no_lewis"])
@@ -460,21 +503,25 @@ class _CalcTab(ttk.Frame):
     def _save_defaults(self) -> None:
         try:
             s = self._settings
-            s["tolerance"]        = float(self._tol.get())
-            s["electron_mode"]    = self._elec.get()
-            s["best_only"]        = self._best_only.get()
-            s["hide_empty"]       = self._hide_empty.get()
-            s["show_isotope"]     = self._show_iso.get()
-            s["no_save_sdf"]      = self._no_sdf.get()
-            s["fetch_structures"] = self._fetch_structures.get()
-            s["no_nitrogen"]      = self._no_n.get()
-            s["no_hd"]            = self._no_hd.get()
-            s["no_lewis"]         = self._no_ls.get()
-            s["no_isotope_score"] = self._no_is.get()
-            s["no_smiles"]        = self._no_sm.get()
-            s["isotope_tolerance"]= float(self._iso_tol.get())
-            s["max_ring_ratio"]   = float(self._ring.get())
-            s["workers"]          = max(1, int(float(self._workers.get())))
+            s["tolerance"]           = float(self._tol.get())
+            s["ppm_mode"]            = self._ppm_mode.get()
+            s["ppm_value"]           = float(self._ppm_val.get())
+            s["electron_mode"]       = self._elec.get()
+            s["best_only"]           = self._best_only.get()
+            s["hide_empty"]          = self._hide_empty.get()
+            s["show_isotope"]        = self._show_iso.get()
+            s["no_save_sdf"]         = self._no_sdf.get()
+            s["fetch_structures"]    = self._fetch_structures.get()
+            s["fragmentation_rules"] = self._frag_rules.get()
+            s["rdkit_validation"]    = self._rdkit_validation.get()
+            s["no_nitrogen"]         = self._no_n.get()
+            s["no_hd"]               = self._no_hd.get()
+            s["no_lewis"]            = self._no_ls.get()
+            s["no_isotope_score"]    = self._no_is.get()
+            s["no_smiles"]           = self._no_sm.get()
+            s["isotope_tolerance"]   = float(self._iso_tol.get())
+            s["max_ring_ratio"]      = float(self._ring.get())
+            s["workers"]             = max(1, int(float(self._workers.get())))
             s.save()
             self._status.set("Defaults saved.")
         except Exception as exc:
@@ -560,26 +607,31 @@ class _CalcTab(ttk.Frame):
         out_sdf  = self._out_sdf.get().strip() or None
         log_file = self._log_file_var.get().strip() or None
 
-        argv = [
-            sdf,
-            "--tolerance",         str(tol),
-            "--electron",          self._elec.get(),
-            "--isotope-tolerance", str(iso_tol),
-            "--max-ring-ratio",    str(ring),
-        ]
-        if self._best_only.get():  argv.append("--best-only")
-        if self._hide_empty.get(): argv.append("--hide-empty")
-        if self._show_iso.get():   argv.append("--isotope")
+        argv = [sdf, "--electron", self._elec.get(),
+                "--isotope-tolerance", str(iso_tol), "--max-ring-ratio", str(ring)]
+        if self._ppm_mode.get():
+            try:
+                ppm_val = float(self._ppm_val.get())
+            except ValueError:
+                ppm_val = 5.0
+            argv += ["--ppm", str(ppm_val)]
+        else:
+            argv += ["--tolerance", str(tol)]
+        if self._best_only.get():           argv.append("--best-only")
+        if self._hide_empty.get():          argv.append("--hide-empty")
+        if self._show_iso.get():            argv.append("--isotope")
         if self._no_sdf.get():              argv.append("--no-save-sdf")
         if self._fetch_structures.get():    argv.append("--fetch-structures")
-        if self._no_n.get():               argv.append("--no-nitrogen-rule")
-        if self._no_hd.get():      argv.append("--no-hd-check")
-        if self._no_ls.get():      argv.append("--no-lewis-senior")
-        if self._no_is.get():      argv.append("--no-isotope-score")
-        if self._no_sm.get():      argv.append("--no-smiles-constraints")
+        if self._frag_rules.get():          argv.append("--fragmentation-rules")
+        if self._rdkit_validation.get():    argv.append("--rdkit")
+        if self._no_n.get():                argv.append("--no-nitrogen-rule")
+        if self._no_hd.get():               argv.append("--no-hd-check")
+        if self._no_ls.get():               argv.append("--no-lewis-senior")
+        if self._no_is.get():               argv.append("--no-isotope-score")
+        if self._no_sm.get():               argv.append("--no-smiles-constraints")
         argv += ["--workers", str(max(1, int(float(self._workers.get()))))]
-        if out_sdf:                argv += ["--output-sdf", out_sdf]
-        if log_file:               argv += ["--output", log_file]
+        if out_sdf:                         argv += ["--output-sdf", out_sdf]
+        if log_file:                        argv += ["--output", log_file]
 
         self._run_btn.configure(state="disabled")
         self._open_btn.configure(state="disabled")

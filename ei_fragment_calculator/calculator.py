@@ -22,7 +22,6 @@ The ``electron_mode`` parameter accepts:
 """
 
 import math
-from itertools import product as cartesian_product
 from typing import Optional
 from .constants import MONOISOTOPIC_MASSES, VALENCE, ELECTRON_MASS
 from .formula   import hill_formula
@@ -114,6 +113,55 @@ def is_valid_dbe(dbe: float) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Branch-and-bound formula enumerator
+# ---------------------------------------------------------------------------
+
+def _enumerate_pruned(elements, max_counts, masses, target, tol):
+    """
+    Yield every combination of element counts whose total mass lies within
+    [target − tol, target + tol], using branch-and-bound pruning.
+
+    Elements should be sorted heaviest-first so the tightest mass bounds
+    are applied at the earliest recursion levels, maximising pruning.
+
+    Parameters
+    ----------
+    elements   : list[str]   Element symbols (unused here, kept for clarity).
+    max_counts : list[int]   Per-element upper bounds (atom conservation).
+    masses     : list[float] Per-element monoisotopic masses.
+    target     : float       Target neutral mass.
+    tol        : float       Allowed deviation (Da).
+
+    Yields
+    ------
+    tuple[int, ...]  One count per element, same order as input lists.
+    """
+    n = len(masses)
+    # max_tail[i] = maximum achievable mass from element i onwards
+    max_tail = [0.0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        max_tail[i] = max_tail[i + 1] + max_counts[i] * masses[i]
+
+    counts = [0] * n
+
+    def recurse(idx, partial):
+        if idx == n:
+            if abs(partial - target) <= tol + 1e-9:
+                yield tuple(counts)
+            return
+        m = masses[idx]
+        # Lower bound: need at least this many to still reach target−tol
+        lo = max(0, math.ceil((target - tol - partial - max_tail[idx + 1]) / m))
+        # Upper bound: cannot exceed target+tol with this element alone
+        hi = min(max_counts[idx], math.floor((target + tol - partial) / m))
+        for c in range(lo, hi + 1):
+            counts[idx] = c
+            yield from recurse(idx + 1, partial + c * m)
+
+    yield from recurse(0, 0.0)
+
+
+# ---------------------------------------------------------------------------
 # Core fragment enumerator
 # ---------------------------------------------------------------------------
 
@@ -168,22 +216,16 @@ def find_fragment_candidates(
         return candidates
 
     # ------------------------------------------------------------------
-    # Analytical last-element optimisation
+    # Branch-and-bound enumeration
     # ------------------------------------------------------------------
-    # Sort elements so the one with the highest atom count is *last*.
-    # Instead of iterating over all its possible counts we solve for the
-    # required count directly from the mass constraint, reducing the
-    # inner loop from O(max_count_last) to O(1) or O(2).
-    order      = sorted(range(len(elements)), key=lambda i: max_counts[i])
+    # Sort elements heaviest-first — this maximises early pruning because
+    # the mass constraint becomes tight at the first recursion levels.
+    order      = sorted(range(len(elements)),
+                        key=lambda i: MONOISOTOPIC_MASSES[elements[i]],
+                        reverse=True)
     elements   = [elements[i]   for i in order]
     max_counts = [max_counts[i] for i in order]
-
-    last_el    = elements[-1]
-    last_mass  = MONOISOTOPIC_MASSES[last_el]
-    last_max   = max_counts[-1]
-    front_els  = elements[:-1]
-    front_max  = max_counts[:-1]
-    front_masses = [MONOISOTOPIC_MASSES[el] for el in front_els]
+    masses     = [MONOISOTOPIC_MASSES[el] for el in elements]
 
     # Target *neutral* mass that would place the ion within ±tolerance
     if electron_mode == "remove":
@@ -193,58 +235,47 @@ def find_fragment_candidates(
     else:
         target = float(nominal_mz)
 
-    for front_counts in cartesian_product(*(range(n + 1) for n in front_max)):
+    for combo in _enumerate_pruned(elements, max_counts, masses, target, tolerance):
 
-        partial   = sum(c * m for c, m in zip(front_counts, front_masses))
-        remaining = target - partial
+        composition = {
+            el: cnt
+            for el, cnt in zip(elements, combo)
+            if cnt > 0
+        }
 
-        # Solve: last_count * last_mass ≈ remaining  (within ±tolerance)
-        lo = max(0, math.ceil( (remaining - tolerance) / last_mass))
-        hi = min(last_max, math.floor((remaining + tolerance) / last_mass))
+        if not composition:
+            continue
 
-        for last_count in range(lo, hi + 1):
+        # --- mass window filter (floating-point exact check after B&B) ---
+        neutral  = exact_mass(composition)
+        measured = ion_mass(neutral, electron_mode)
+        delta    = measured - nominal_mz
 
-            composition = {
-                el: cnt
-                for el, cnt in zip(front_els, front_counts)
-                if cnt > 0
-            }
-            if last_count > 0:
-                composition[last_el] = last_count
+        if abs(delta) > tolerance:
+            continue
 
-            if not composition:
-                continue
+        # --- DBE filter ---
+        dbe = calculate_dbe(composition)
+        if not is_valid_dbe(dbe):
+            continue
 
-            # --- mass window filter (exact check after analytical pre-filter) ---
-            neutral  = exact_mass(composition)
-            measured = ion_mass(neutral, electron_mode)
-            delta    = measured - nominal_mz
+        entry: dict = {
+            "formula":       hill_formula(composition),
+            "neutral_mass":  round(neutral, 6),
+            "ion_mass":      round(measured, 6),
+            "delta_mass":    round(delta, 6),
+            "dbe":           dbe,
+            "electron_mode": electron_mode,
+            "_composition":  composition,   # needed by filter pipeline
+        }
 
-            if abs(delta) > tolerance:
-                continue
+        # --- optional isotope pattern ---
+        if include_isotope_pattern:
+            pattern = isotope_pattern(composition)
+            entry["isotope_pattern"] = pattern
+            entry["isotope_summary"] = pattern_summary(pattern)
 
-            # --- DBE filter ---
-            dbe = calculate_dbe(composition)
-            if not is_valid_dbe(dbe):
-                continue
-
-            entry: dict = {
-                "formula":       hill_formula(composition),
-                "neutral_mass":  round(neutral, 6),
-                "ion_mass":      round(measured, 6),
-                "delta_mass":    round(delta, 6),
-                "dbe":           dbe,
-                "electron_mode": electron_mode,
-                "_composition":  composition,   # needed by filter pipeline
-            }
-
-            # --- optional isotope pattern ---
-            if include_isotope_pattern:
-                pattern = isotope_pattern(composition)
-                entry["isotope_pattern"] = pattern
-                entry["isotope_summary"] = pattern_summary(pattern)
-
-            candidates.append(entry)
+        candidates.append(entry)
 
     candidates.sort(key=lambda x: x["ion_mass"])
 

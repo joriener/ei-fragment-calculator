@@ -122,6 +122,17 @@ def check_optional_dependencies():
             file=sys.stderr,
         )
 
+    try:
+        from rdkit import Chem  # noqa: F401
+    except ImportError:
+        print(
+            "[PREFLIGHT NOTE] rdkit is not installed.\n"
+            "  Filter 6 (RDKit chemical validation) and structure-based\n"
+            "  fragmentation rules (--fragmentation-rules) require it.\n"
+            "  Install with:  pip install rdkit-pypi\n",
+            file=sys.stderr,
+        )
+
 
 def run_preflight_checks():
     """
