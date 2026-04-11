@@ -538,8 +538,15 @@ class _CalcTab(ttk.Frame):
         init = self._settings["last_input_dir"] or str(Path.home())
         path = filedialog.askopenfilename(
             initialdir=init,
-            title="Select input SDF file",
-            filetypes=[("SDF files", "*.sdf *.SDF"), ("All files", "*.*")],
+            title="Select input file",
+            filetypes=[
+                ("All supported", "*.sdf *.SDF *.msp *.MSP *.jdx *.JDX *.jcamp *.csv *.tsv"),
+                ("SDF", "*.sdf *.SDF"),
+                ("MSP (NIST)", "*.msp *.MSP"),
+                ("JCAMP-DX", "*.jdx *.JDX *.jcamp"),
+                ("CSV / TSV", "*.csv *.tsv"),
+                ("All files", "*.*"),
+            ],
         )
         if path:
             self._in_var.set(path)
@@ -591,7 +598,7 @@ class _CalcTab(ttk.Frame):
             return
         sdf = self._in_var.get().strip()
         if not sdf:
-            messagebox.showwarning("No input file", "Please select an input SDF file.")
+            messagebox.showwarning("No input file", "Please select an input file (SDF, MSP, JDX, or CSV).")
             return
         if not Path(sdf).exists():
             messagebox.showerror("File not found", "Input file does not exist:\n" + sdf)

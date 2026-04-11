@@ -1,0 +1,62 @@
+Caffeine
+  EI example  v1.7.0
+
+  0  0  0     0  0            999 V2000
+M  END
+> <MOLECULAR FORMULA>
+C8H10N4O2
+
+> <MW>
+194
+
+> <MASS SPECTRAL PEAKS>
+55 28
+67 37
+69 18
+82 39
+109 37
+137 39
+138 100
+194 75
+
+$$$$
+Acetophenone
+  EI example  v1.7.0
+
+  0  0  0     0  0            999 V2000
+M  END
+> <MOLECULAR FORMULA>
+C8H8O
+
+> <MW>
+120
+
+> <MASS SPECTRAL PEAKS>
+51 43
+65 11
+77 100
+105 67
+120 40
+
+$$$$
+Toluene
+  EI example  v1.7.0
+
+  0  0  0     0  0            999 V2000
+M  END
+> <MOLECULAR FORMULA>
+C7H8
+
+> <MW>
+92
+
+> <MASS SPECTRAL PEAKS>
+39 17
+50 13
+51 22
+63 13
+65 33
+91 100
+92 70
+
+$$$$

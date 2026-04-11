@@ -32,7 +32,8 @@ import argparse
 import multiprocessing as mp
 from .formula     import parse_formula, hill_formula
 from .calculator  import exact_mass, ion_mass, calculate_dbe, find_fragment_candidates
-from .sdf_parser  import parse_sdf, get_formula_and_peaks
+from .sdf_parser  import get_formula_and_peaks
+from .input_reader import read_records
 from .isotope     import isotope_pattern, pattern_summary
 from .constants   import ELECTRON_MASS
 from .preflight   import run_preflight_checks
@@ -89,6 +90,11 @@ def format_record(
     lines: list[str] = []
 
     formula_str, nominal_mzs = get_formula_and_peaks(record)
+
+    # Emit [WARN] if formula was derived automatically from the MOL block
+    if record.get("fields", {}).get("_derived_formula") == "1":
+        lines.append("  [WARN] Formula '{}' derived from MOL block atom table for '{}'.".format(
+            formula_str, name))
 
     if formula_str is None:
         return "  [SKIP] No molecular formula field found for '{}'.\n".format(name)
@@ -534,13 +540,16 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
 
     try:
-        records = parse_sdf(args.sdf_file)
+        records = read_records(args.sdf_file)
     except FileNotFoundError:
         print("[ERROR] File not found: '{}'".format(args.sdf_file), file=sys.stderr)
         sys.exit(1)
+    except ValueError as exc:
+        print("[ERROR] {}".format(exc), file=sys.stderr)
+        sys.exit(1)
 
     if not records:
-        print("[ERROR] No records found in the SDF file.", file=sys.stderr)
+        print("[ERROR] No records found in the input file.", file=sys.stderr)
         sys.exit(1)
 
     # ── Optional: fetch 2-D structures from PubChem ──────────────────────────
