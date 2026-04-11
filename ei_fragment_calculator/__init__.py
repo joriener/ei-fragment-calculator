@@ -26,10 +26,19 @@ from .filters    import (FilterConfig, run_all_filters, rank_candidates,
                          score_isotope_match, apply_smiles_constraints)
 from .mol_parser import parse_mol_block, extract_mol_block, MolInfo
 from .sdf_writer import write_exact_masses_sdf, write_exact_sdf, exact_sdf_path
-from .enrich     import (EnrichConfig, enrich_record, enrich_records,
-                         query_pubchem, query_chebi, query_kegg, query_hmdb)
 
-__version__ = "1.6.0"
+# Enrichment is provided by the optional 'sdf-enricher' package.
+# Install with:  pip install "ei-fragment-calculator[enrich]"
+try:
+    from sdf_enricher.enricher  import EnrichConfig, enrich_record, enrich_records  # noqa: F401
+    from sdf_enricher.databases import (                                              # noqa: F401
+        query_pubchem, query_chebi, query_kegg, query_hmdb,
+    )
+    _HAS_ENRICHER = True
+except ImportError:
+    _HAS_ENRICHER = False
+
+__version__ = "1.6.3"
 __author__  = "Your Name"
 __license__ = "MIT"
 
@@ -63,11 +72,16 @@ __all__ = [
     "write_exact_masses_sdf",
     "write_exact_sdf",
     "exact_sdf_path",
-    "EnrichConfig",
-    "enrich_record",
-    "enrich_records",
-    "query_pubchem",
-    "query_chebi",
-    "query_kegg",
-    "query_hmdb",
 ]
+
+# Enrichment symbols are added only when sdf-enricher is installed
+if _HAS_ENRICHER:
+    __all__ += [
+        "EnrichConfig",
+        "enrich_record",
+        "enrich_records",
+        "query_pubchem",
+        "query_chebi",
+        "query_kegg",
+        "query_hmdb",
+    ]

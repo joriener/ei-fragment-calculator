@@ -1,7 +1,7 @@
 """
 filters.py
 ==========
-Five optional post-enumeration filters, one scorer, and a ranking helper
+Six optional post-enumeration filters, one scorer, and a ranking helper
 that refine the candidate formula list for each EI mass spectrum peak.
 
 All filters are enabled by default and can be individually deactivated
@@ -14,6 +14,7 @@ Filter summary
 3. Lewis & Senior Rules  -- valence-sum constraints from graph theory
 4. Isotope Pattern Score -- match theoretical M/M+1/M+2 ratios to spectrum
 5. SMILES Constraints    -- ring count upper bound from parsed MOL block
+6. RDKit Validation      -- element recognition via RDKit periodic table (optional)
 
 Ranking
 -------
@@ -39,6 +40,8 @@ Isotope pattern scoring:
 SMILES / structural constraints:
   Weininger D. (1988) J. Chem. Inf. Comput. Sci. 28(1):31-36.
   https://doi.org/10.1021/ci00057a005
+RDKit chemical validation:
+  RDKit: Open-source cheminformatics. https://www.rdkit.org
 """
 
 from dataclasses import dataclass
@@ -65,6 +68,7 @@ class FilterConfig:
     lewis_senior        : bool   Apply Lewis & Senior valence-sum rules (default True).
     isotope_score       : bool   Score by isotope pattern match (default True).
     smiles_constraints  : bool   Apply ring-count upper bound from MOL block (default True).
+    rdkit_validation    : bool   Validate elements via RDKit periodic table (default False).
     isotope_tolerance   : float  Max deviation in percentage points (default 30.0).
     max_ring_ratio      : float  Max DBE/C ratio for HD check (default 0.5).
     """
@@ -73,6 +77,7 @@ class FilterConfig:
     lewis_senior        : bool  = True
     isotope_score       : bool  = True
     smiles_constraints  : bool  = True
+    rdkit_validation    : bool  = False
     isotope_tolerance   : float = 30.0
     max_ring_ratio      : float = 0.5
 
@@ -312,6 +317,46 @@ def apply_smiles_constraints(
 
 
 # ---------------------------------------------------------------------------
+# 6.  RDKit chemical validation
+# ---------------------------------------------------------------------------
+
+RDKIT_VALIDATION_REF = (
+    "RDKit: Open-source cheminformatics. https://www.rdkit.org"
+)
+
+
+def apply_rdkit_validation(composition: dict) -> tuple:
+    """
+    Validate a candidate formula using RDKit's periodic table.
+
+    Checks that every element symbol is recognized by RDKit.  Unknown or
+    misspelled element symbols (e.g. 'Xx', 'R') are rejected.
+
+    If RDKit is not installed the filter is silently skipped (returns True).
+
+    Returns (passed: bool, message: str).
+    Ref: RDKit open-source cheminformatics.
+    """
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return True, "RDKit not installed — validation skipped"
+
+    pt = Chem.GetPeriodicTable()
+    for el, cnt in composition.items():
+        if cnt <= 0:
+            continue
+        try:
+            atomic_num = pt.GetAtomicNumber(el)
+            if atomic_num == 0:
+                return False, "RDKit: unknown element '{}'".format(el)
+        except Exception:
+            return False, "RDKit: unrecognized element '{}'".format(el)
+
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Combined filter runner
 # ---------------------------------------------------------------------------
 
@@ -368,6 +413,12 @@ def run_all_filters(
     if config.smiles_constraints:
         passed, msg = apply_smiles_constraints(composition, dbe, parent_ring_count)
         details["smiles_constraints"] = msg if msg else "OK"
+        if not passed:
+            all_passed = False
+
+    if config.rdkit_validation:
+        passed, msg = apply_rdkit_validation(composition)
+        details["rdkit_validation"] = msg if msg else "OK"
         if not passed:
             all_passed = False
 

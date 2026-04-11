@@ -100,6 +100,101 @@ def parse_mol_block(mol_text: str) -> MolInfo:
     return info
 
 
+def parse_mol_block_full(mol_block: str) -> Optional[dict]:
+    """
+    Parse a V2000 MDL MOL block into a full atom + bond connectivity graph.
+
+    Returns ``None`` for 'No Structure' blocks (atom_count == 0) or on parse
+    failure.  When successful, returns::
+
+        {
+          "atoms":     [{"element": "C", "charge": 0}, ...],   # 0-indexed
+          "bonds":     [{"a1": 0, "a2": 1, "type": 1}, ...],   # 0-indexed
+          "adjacency": {0: [1, 2], 1: [0, 3], ...},
+          "ring_count": int,
+        }
+
+    Bond types follow the V2000 convention:
+        1 = single, 2 = double, 3 = triple, 4 = aromatic.
+
+    Parameters
+    ----------
+    mol_block : str  Raw MDL MOL block text.
+
+    Returns
+    -------
+    dict | None
+    """
+    lines = mol_block.strip().splitlines()
+    if len(lines) < 4:
+        return None
+
+    counts_match = re.match(r"^\s*(\d+)\s+(\d+)", lines[3])
+    if not counts_match:
+        return None
+
+    atom_count = int(counts_match.group(1))
+    bond_count = int(counts_match.group(2))
+
+    if atom_count == 0:
+        return None   # 'No Structure' block
+
+    # ── Atom table ────────────────────────────────────────────────────────
+    atom_pattern = re.compile(
+        r"^\s*-?\d+\.\d+\s+-?\d+\.\d+\s+-?\d+\.\d+\s+"
+        r"([A-Za-z][a-z]?[a-z]?)"     # element symbol (1-3 chars)
+        r"(?:\s+(-?\d+))?",            # optional mass-difference (ignored)
+    )
+    charge_map = {
+        1: +3, 2: +2, 3: +1, 4: 0, 5: -1, 6: -2, 7: -3,
+    }
+
+    atoms: list[dict] = []
+    for i in range(4, 4 + atom_count):
+        if i >= len(lines):
+            break
+        m = atom_pattern.match(lines[i])
+        if m:
+            # charge is the 6th token on the atom line (0-based index 5 after 3 coords)
+            parts = lines[i].split()
+            charge = 0
+            if len(parts) >= 6:
+                try:
+                    raw_charge = int(parts[5])
+                    charge = charge_map.get(raw_charge, 0)
+                except ValueError:
+                    pass
+            atoms.append({"element": m.group(1), "charge": charge})
+
+    # ── Bond table ────────────────────────────────────────────────────────
+    bond_pattern = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)")
+    bonds: list[dict] = []
+    adjacency: dict[int, list] = {i: [] for i in range(len(atoms))}
+
+    bond_start = 4 + atom_count
+    for i in range(bond_start, bond_start + bond_count):
+        if i >= len(lines):
+            break
+        m = bond_pattern.match(lines[i])
+        if m:
+            a1 = int(m.group(1)) - 1   # V2000 is 1-indexed → 0-indexed
+            a2 = int(m.group(2)) - 1
+            btype = int(m.group(3))
+            if 0 <= a1 < len(atoms) and 0 <= a2 < len(atoms):
+                bonds.append({"a1": a1, "a2": a2, "type": btype})
+                adjacency[a1].append(a2)
+                adjacency[a2].append(a1)
+
+    ring_count = max(0, len(bonds) - len(atoms) + 1)
+
+    return {
+        "atoms":     atoms,
+        "bonds":     bonds,
+        "adjacency": adjacency,
+        "ring_count": ring_count,
+    }
+
+
 def extract_mol_block(raw_record_text: str) -> Optional[str]:
     """
     Extract the MOL block from a raw SDF record string.

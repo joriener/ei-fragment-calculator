@@ -10,6 +10,7 @@ or abundances updated without touching Python source code.
 
 import csv
 import os
+import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -18,13 +19,25 @@ from pathlib import Path
 ELECTRON_MASS = 0.00054857990907  # Da
 
 # ---------------------------------------------------------------------------
-# Locate data directory relative to this file
-# Structure:  ei_fragment_calculator/constants.py
-#             data/elements.csv
+# Locate data directory — works in both normal and PyInstaller-frozen builds.
+#
+# Normal (pip install / editable):
+#   ei_fragment_calculator/constants.py  →  ../data/elements.csv
+#
+# Frozen (PyInstaller --onedir):
+#   sys._MEIPASS is the temp directory where PyInstaller unpacks everything.
+#   The spec file places elements.csv into a 'data/' sub-folder there.
 # ---------------------------------------------------------------------------
-_PKG_DIR  = Path(__file__).parent          # ei_fragment_calculator/
-_DATA_DIR = _PKG_DIR.parent / "data"       # project_root/data/
-_CSV_PATH = _DATA_DIR / "elements.csv"
+
+def _find_csv() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        # Running inside a PyInstaller bundle
+        return Path(sys._MEIPASS) / "data" / "elements.csv"
+    # Normal development / installed-package path
+    return Path(__file__).parent.parent / "data" / "elements.csv"
+
+
+_CSV_PATH = _find_csv()
 
 
 def load_element_data(csv_path: Path = _CSV_PATH) -> tuple[dict, dict, dict]:

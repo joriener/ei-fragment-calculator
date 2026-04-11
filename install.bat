@@ -4,7 +4,7 @@ title EI Fragment Calculator -- Installer
 
 echo.
 echo ============================================================
-echo  EI Fragment Exact-Mass Calculator  v1.5.0  --  Installer
+echo  EI Fragment Exact-Mass Calculator  v1.6.3  --  Installer
 echo ============================================================
 echo.
 
@@ -58,7 +58,7 @@ echo [OK] pip is available.
 
 REM ── 4. Upgrade pip + setuptools to meet build requirements ────
 echo.
-echo [Step 1/3]  Upgrading pip and setuptools...
+echo [Step 1/4]  Upgrading pip and setuptools...
 python -m pip install --upgrade pip setuptools wheel
 if errorlevel 1 (
     echo [ERROR] Could not upgrade pip / setuptools.
@@ -69,7 +69,7 @@ echo [OK] pip and setuptools are up to date.
 
 REM ── 5. Install the package ────────────────────────────────────
 echo.
-echo [Step 2/3]  Installing ei-fragment-calculator...
+echo [Step 2/4]  Installing ei-fragment-calculator...
 cd /d "%~dp0"
 python -m pip install -e .
 if errorlevel 1 (
@@ -82,9 +82,26 @@ if errorlevel 1 (
 )
 echo [OK] Package installed successfully.
 
+REM ── 5b. Install optional packages ────────────────────────────
+echo.
+echo [Step 3/4]  Installing optional packages...
+echo             sdf-enricher  (SDF Enricher tab)
+echo             splashpy      (SPLASH spectral hash)
+echo             matplotlib    (workflow diagram)
+echo             pytest        (test suite)
+echo.
+python -m pip install sdf-enricher splashpy matplotlib pytest --quiet
+if errorlevel 1 (
+    echo [WARN] One or more optional packages failed to install.
+    echo        Affected features will be unavailable until installed manually.
+    echo.
+) else (
+    echo [OK] Optional packages installed.
+)
+
 REM ── 6. Verify the entry point is reachable ────────────────────
 echo.
-echo [Step 3/3]  Verifying installation...
+echo [Step 4/4]  Verifying installation...
 ei-fragment-calc --help >nul 2>&1
 if errorlevel 1 (
     echo [WARN] 'ei-fragment-calc' command not found in PATH.

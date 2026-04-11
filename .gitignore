@@ -32,3 +32,14 @@ Thumbs.db
 # Output files
 *.txt
 !examples/
+# Large SDF databases and processed output files (not part of the source tree)
+nist_ri.SDF
+NIST*.SDF
+NIST*.sdf
+RTLPEST*.SDF
+RTLPEST*.sdf
+*-EXACT.sdf
+*-EXACT.SDF
+
+# Installer build output
+installer_output/
