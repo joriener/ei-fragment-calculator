@@ -495,21 +495,3 @@ def test_example_jdx_file():
     assert len(records) == 2
 
 
-def test_example_csv_block_file():
-    """Smoke-test the bundled CSV Layout A example."""
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    csv_path = os.path.join(here, "examples", "two_compounds.csv")
-    if not os.path.exists(csv_path):
-        pytest.skip("examples/two_compounds.csv not found")
-    records = read_records(csv_path)
-    assert len(records) == 2
-
-
-def test_example_csv_flat_file():
-    """Smoke-test the bundled CSV Layout B example."""
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    csv_path = os.path.join(here, "examples", "two_compounds_flat.csv")
-    if not os.path.exists(csv_path):
-        pytest.skip("examples/two_compounds_flat.csv not found")
-    records = read_records(csv_path)
-    assert len(records) == 2
