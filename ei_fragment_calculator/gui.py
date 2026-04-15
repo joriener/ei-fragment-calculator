@@ -1534,6 +1534,9 @@ class EIFragmentApp(tk.Tk):
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Required by PyInstaller on Windows when multiprocessing workers are used
+    import multiprocessing
+    multiprocessing.freeze_support()
     app = EIFragmentApp()
     app.mainloop()
 

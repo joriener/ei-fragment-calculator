@@ -15,7 +15,7 @@ a = Analysis(
     pathex=[str(Path('.').resolve())],
     binaries=[],
     datas=[
-        ('ei_fragment_calculator/data/elements.csv', 'ei_fragment_calculator/data'),
+        ('data/elements.csv', 'data'),
         ('examples', 'examples'),
     ],
     hiddenimports=[
