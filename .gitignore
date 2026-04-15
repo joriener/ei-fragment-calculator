@@ -40,6 +40,14 @@ RTLPEST*.SDF
 RTLPEST*.sdf
 *-EXACT.sdf
 *-EXACT.SDF
+*-EXACT.msp
+*-ENRICHED.sdf
+chemvista_output_*.sdf
+
+# MS Office temporary files (created while the document is open)
+~$*.pptx
+~$*.docx
+~$*.xlsx
 
 # Installer build output
 installer_output/
