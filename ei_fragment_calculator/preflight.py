@@ -124,9 +124,12 @@ def check_optional_dependencies():
 
     try:
         from rdkit import Chem  # noqa: F401
-    except ImportError:
+    except Exception:
+        # Catches ImportError (not installed), AttributeError (_ARRAY_API not found
+        # when RDKit was compiled against NumPy 1.x and NumPy 2.x is active), and
+        # any other failure during rdkit initialisation.
         print(
-            "[PREFLIGHT NOTE] rdkit is not installed.\n"
+            "[PREFLIGHT NOTE] rdkit is not available (not installed or NumPy version mismatch).\n"
             "  Filter 6 (RDKit chemical validation) and structure-based\n"
             "  fragmentation rules (--fragmentation-rules) require it.\n"
             "  Install with:  pip install rdkit-pypi\n",

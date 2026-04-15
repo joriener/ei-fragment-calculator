@@ -95,6 +95,12 @@ _FACTORY: dict = {
     "ppm_value":            5.0,
     "fragmentation_rules":  False,
     "rdkit_validation":     False,
+    "hr_mode":              False,
+    "auto_hr":              False,
+    "hr_ppm":               20.0,
+    "confidence":           False,
+    "confidence_threshold": 0.0,
+    "merge_structures":     "",
     "last_input_dir":       "",
     "last_output_dir":      "",
     # enricher
@@ -280,6 +286,7 @@ class _CalcTab(ttk.Frame):
         self._settings = settings
         self._running  = False
         self._out_sdf  = tk.StringVar()
+        self._out_msp  = tk.StringVar()
         self._build()
         self._load_settings()
 
@@ -305,14 +312,22 @@ class _CalcTab(ttk.Frame):
         ttk.Button(io, text="Browse…", command=self._browse_out_sdf).grid(
             row=1, column=2, padx=(0, 2))
 
-        ttk.Label(io, text="Log to file:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Label(io, text="Output MSP:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Entry(io, textvariable=self._out_msp).grid(
+            row=2, column=1, sticky=tk.EW, padx=(6, 4))
+        ttk.Button(io, text="Browse…", command=self._browse_out_msp).grid(
+            row=2, column=2, padx=(0, 2))
+        ttk.Label(io, text="(optional — NIST MSP with exact ion masses)",
+                  foreground=_FG_DIM).grid(row=2, column=3, padx=6, sticky=tk.W)
+
+        ttk.Label(io, text="Log to file:").grid(row=3, column=0, sticky=tk.W, pady=2)
         self._log_file_var = tk.StringVar()
         ttk.Entry(io, textvariable=self._log_file_var).grid(
-            row=2, column=1, sticky=tk.EW, padx=(6, 4))
+            row=3, column=1, sticky=tk.EW, padx=(6, 4))
         ttk.Button(io, text="Browse…", command=self._browse_log_file).grid(
-            row=2, column=2, padx=(0, 2))
+            row=3, column=2, padx=(0, 2))
         ttk.Label(io, text="(optional — leave blank to show in window only)",
-                  foreground=_FG_DIM).grid(row=2, column=3, padx=6, sticky=tk.W)
+                  foreground=_FG_DIM).grid(row=3, column=3, padx=6, sticky=tk.W)
 
         # ── Main Options ─────────────────────────────────────────────────────
         opt = ttk.LabelFrame(self, text=" Main Options ", padding=8)
@@ -389,6 +404,58 @@ class _CalcTab(ttk.Frame):
             cb.pack(side=tk.LEFT, padx=(0, 16))
             _tooltip(cb, tip)
 
+        # Row 2 — HR input mode
+        r2 = ttk.Frame(opt); r2.pack(fill=tk.X, pady=(0, 4))
+        self._hr_mode  = tk.BooleanVar()
+        self._auto_hr  = tk.BooleanVar()
+        self._hr_ppm   = tk.StringVar()
+        cb_hr = ttk.Checkbutton(r2, text="HR Input", variable=self._hr_mode)
+        cb_hr.pack(side=tk.LEFT, padx=(0, 4))
+        _tooltip(cb_hr,
+            "Treat peak m/z values as exact masses (high-resolution mode).\n"
+            "Matches candidates within ±HR ppm instead of the fixed Da tolerance.\n"
+            "Use for spectra from QTOF / Orbitrap / ChemVista / MassBank HR.")
+        cb_ahr = ttk.Checkbutton(r2, text="Auto-detect HR", variable=self._auto_hr)
+        cb_ahr.pack(side=tk.LEFT, padx=(0, 16))
+        _tooltip(cb_ahr,
+            "Automatically enable HR mode if the majority of m/z values\n"
+            "have a fractional part > 0.010 Da (heuristic detection).")
+        ttk.Label(r2, text="HR ppm \u00b1:").pack(side=tk.LEFT)
+        hr_spin = _spin(r2, self._hr_ppm, 1.0, 200.0, 1.0)
+        hr_spin.pack(side=tk.LEFT, padx=(4, 0))
+        _tooltip(hr_spin, "ppm tolerance for HR input matching (default: 20 ppm).")
+
+        # Row 3 — Confidence scoring
+        r3 = ttk.Frame(opt); r3.pack(fill=tk.X, pady=(0, 4))
+        self._confidence      = tk.BooleanVar()
+        self._conf_threshold  = tk.StringVar()
+        cb_conf = ttk.Checkbutton(r3, text="Confidence Scoring", variable=self._confidence)
+        cb_conf.pack(side=tk.LEFT, padx=(0, 4))
+        _tooltip(cb_conf,
+            "Enable v1.8 unit-mass confidence scoring:\n"
+            "  A. ¹³C M+1 isotope match\n"
+            "  B. M+2 heavy-atom isotope (S, Cl, Br)\n"
+            "  C. Neutral-loss cross-check (CO, H₂O, HCN, …)\n"
+            "  D. Complementary ion pairs\n"
+            "  E. DBE plausibility + even/odd-electron rule\n"
+            "  F. Stable-ion library (tropylium, phenyl, …)\n"
+            "Adds Conf% and Evidence columns to the output table.\n"
+            "Ignored when --hr / --auto-hr is active (HR mode has exact mass).")
+        ttk.Label(r3, text="Min confidence %:").pack(side=tk.LEFT, padx=(8, 0))
+        conf_spin = _spin(r3, self._conf_threshold, 0.0, 100.0, 5.0)
+        conf_spin.pack(side=tk.LEFT, padx=(4, 16))
+        _tooltip(conf_spin,
+            "In --best-only mode, skip peaks whose top candidate has\n"
+            "confidence below this threshold (0 = keep all, default).")
+
+        ttk.Label(r3, text="Merge structures SDF:").pack(side=tk.LEFT)
+        self._merge_sdf_var = tk.StringVar()
+        ttk.Entry(r3, textvariable=self._merge_sdf_var, width=30).pack(
+            side=tk.LEFT, padx=(4, 4))
+        ttk.Button(r3, text="Browse…",
+                   command=self._browse_merge_sdf).pack(side=tk.LEFT, padx=(0, 6))
+        _tooltip_label(r3, "Optional SDF with 2-D structures for M+1/M+2 isotope scoring")
+
         # ── Filter Options ───────────────────────────────────────────────────
         flt = ttk.LabelFrame(self, text=" Algorithm Filters  (all ON by default) ",
                              padding=8)
@@ -434,6 +501,27 @@ class _CalcTab(ttk.Frame):
                    command=self._save_defaults).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(def_fr, text="↩  Reset to Factory",
                    command=self._reset_defaults).pack(side=tk.LEFT)
+
+        # ── Package status (compact inline row) ──────────────────────────────
+        pkg_fr = ttk.Frame(self)
+        pkg_fr.pack(fill=tk.X, pady=(2, 4))
+        ttk.Label(pkg_fr, text="Packages:", foreground=_FG_DIM).pack(
+            side=tk.LEFT, padx=(0, 6))
+        _PKG_STATUS = [
+            ("rdkit",        "RDKit",       "Filter 6 – SMILES/ring validation"),
+            ("sdf_enricher", "sdf-enricher","SDF Enricher tab – fill metadata"),
+            ("splashpy",     "splashpy",    "SPLASH spectral hash"),
+            ("matplotlib",   "matplotlib",  "Workflow diagrams"),
+        ]
+        for imp, label, tip in _PKG_STATUS:
+            ok = importlib.util.find_spec(imp) is not None
+            icon = "✓" if ok else "✗"
+            color = _GREEN if ok else _RED
+            lbl = ttk.Label(pkg_fr, text="{} {}".format(icon, label),
+                            foreground=color)
+            lbl.pack(side=tk.LEFT, padx=(0, 12))
+            _tooltip(lbl, "{}\n{}".format(tip,
+                "Installed ✓" if ok else "Not installed — pip install {}".format(imp)))
 
         _sep(self)
 
@@ -492,6 +580,12 @@ class _CalcTab(ttk.Frame):
         self._fetch_structures.set(s["fetch_structures"])
         self._frag_rules.set(s["fragmentation_rules"])
         self._rdkit_validation.set(s["rdkit_validation"])
+        self._hr_mode.set(s["hr_mode"])
+        self._auto_hr.set(s["auto_hr"])
+        self._hr_ppm.set(str(s["hr_ppm"]))
+        self._confidence.set(s["confidence"])
+        self._conf_threshold.set(str(s["confidence_threshold"]))
+        self._merge_sdf_var.set(str(s["merge_structures"]))
         self._no_n.set(s["no_nitrogen"])
         self._no_hd.set(s["no_hd"])
         self._no_ls.set(s["no_lewis"])
@@ -515,6 +609,12 @@ class _CalcTab(ttk.Frame):
             s["fetch_structures"]    = self._fetch_structures.get()
             s["fragmentation_rules"] = self._frag_rules.get()
             s["rdkit_validation"]    = self._rdkit_validation.get()
+            s["hr_mode"]             = self._hr_mode.get()
+            s["auto_hr"]             = self._auto_hr.get()
+            s["hr_ppm"]              = float(self._hr_ppm.get())
+            s["confidence"]          = self._confidence.get()
+            s["confidence_threshold"] = float(self._conf_threshold.get() or "0")
+            s["merge_structures"]    = self._merge_sdf_var.get().strip()
             s["no_nitrogen"]         = self._no_n.get()
             s["no_hd"]               = self._no_hd.get()
             s["no_lewis"]            = self._no_ls.get()
@@ -541,9 +641,9 @@ class _CalcTab(ttk.Frame):
             initialdir=init,
             title="Select input file",
             filetypes=[
-                ("All supported", "*.sdf *.SDF *.msp *.MSP *.jdx *.JDX *.jcamp *.csv *.tsv"),
+                ("All supported", "*.sdf *.SDF *.msp *.MSP *.mspec *.MSPEC *.jdx *.JDX *.jcamp *.csv *.tsv"),
                 ("SDF", "*.sdf *.SDF"),
-                ("MSP (NIST)", "*.msp *.MSP"),
+                ("MSP / MSPEC (NIST)", "*.msp *.MSP *.mspec *.MSPEC"),
                 ("JCAMP-DX", "*.jdx *.JDX *.jcamp"),
                 ("CSV / TSV", "*.csv *.tsv"),
                 ("All files", "*.*"),
@@ -567,6 +667,20 @@ class _CalcTab(ttk.Frame):
             self._out_sdf.set(path)
             self._settings["last_output_dir"] = str(Path(path).parent)
 
+    def _browse_out_msp(self) -> None:
+        init_dir = self._settings["last_output_dir"] or str(Path.home())
+        init_file = Path(self._out_msp.get()).name if self._out_msp.get() else "output-EXACT.msp"
+        path = filedialog.asksaveasfilename(
+            initialdir=init_dir,
+            initialfile=init_file,
+            title="Save exact-mass MSP as…",
+            defaultextension=".msp",
+            filetypes=[("MSP files", "*.msp"), ("All files", "*.*")],
+        )
+        if path:
+            self._out_msp.set(path)
+            self._settings["last_output_dir"] = str(Path(path).parent)
+
     def _browse_log_file(self) -> None:
         path = filedialog.asksaveasfilename(
             title="Save text log as…",
@@ -576,12 +690,23 @@ class _CalcTab(ttk.Frame):
         if path:
             self._log_file_var.set(path)
 
+    def _browse_merge_sdf(self) -> None:
+        init = self._settings["last_input_dir"] or str(Path.home())
+        path = filedialog.askopenfilename(
+            initialdir=init,
+            title="Select structure SDF for --merge-structures",
+            filetypes=[("SDF files", "*.sdf *.SDF"), ("All files", "*.*")],
+        )
+        if path:
+            self._merge_sdf_var.set(path)
+
     def _update_out_sdf(self, *_) -> None:
-        """Auto-derive output SDF path when input changes (unless user set it)."""
+        """Auto-derive output SDF and MSP paths when input changes."""
         p = self._in_var.get().strip()
         if p:
-            from .sdf_writer import exact_sdf_path
+            from .sdf_writer import exact_sdf_path, exact_msp_path
             self._out_sdf.set(exact_sdf_path(p))
+            self._out_msp.set(exact_msp_path(p))
 
     def _open_folder(self) -> None:
         p = self._out_sdf.get()
@@ -632,6 +757,22 @@ class _CalcTab(ttk.Frame):
         if self._fetch_structures.get():    argv.append("--fetch-structures")
         if self._frag_rules.get():          argv.append("--fragmentation-rules")
         if self._rdkit_validation.get():    argv.append("--rdkit")
+        if self._hr_mode.get():             argv.append("--hr")
+        if self._auto_hr.get():             argv.append("--auto-hr")
+        try:
+            hr_ppm_val = float(self._hr_ppm.get())
+        except ValueError:
+            hr_ppm_val = 20.0
+        argv += ["--hr-ppm", str(hr_ppm_val)]
+        if self._confidence.get():          argv.append("--confidence")
+        try:
+            conf_thr = float(self._conf_threshold.get() or "0")
+        except ValueError:
+            conf_thr = 0.0
+        if conf_thr > 0.0:
+            argv += ["--confidence-threshold", str(conf_thr / 100.0)]
+        merge_sdf = self._merge_sdf_var.get().strip()
+        if merge_sdf:                       argv += ["--merge-structures", merge_sdf]
         if self._no_n.get():                argv.append("--no-nitrogen-rule")
         if self._no_hd.get():               argv.append("--no-hd-check")
         if self._no_ls.get():               argv.append("--no-lewis-senior")
@@ -639,6 +780,8 @@ class _CalcTab(ttk.Frame):
         if self._no_sm.get():               argv.append("--no-smiles-constraints")
         argv += ["--workers", str(max(1, int(float(self._workers.get()))))]
         if out_sdf:                         argv += ["--output-sdf", out_sdf]
+        out_msp = self._out_msp.get().strip() or None
+        if out_msp:                         argv += ["--output-msp", out_msp]
         if log_file:                        argv += ["--output", log_file]
 
         self._run_btn.configure(state="disabled")

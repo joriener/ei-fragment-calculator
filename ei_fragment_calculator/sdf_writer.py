@@ -77,25 +77,32 @@ def _find_field_key(fields: dict, candidates: list) -> str | None:
 
 def _parse_peaks_with_intensity(peak_text: str) -> list:
     """
-    Parse a peak-list string into a list of (nominal_mz: int, intensity: int) pairs.
+    Parse a peak-list string into a list of (nominal_mz: int, intensity) pairs.
 
     Handles both layouts:
-        ``"41 999 43 850 55 620"``     (space-separated pairs on one line)
-        ``"41 999\\n43 850\\n55 620"``  (one pair per line)
-        ``"3\\n41 999\\n43 850"``       (optional leading peak count, odd tokens)
+        ``"41 999 43 850 55 620"``       (space-separated integer pairs)
+        ``"41 999\\n43 850\\n55 620"``    (one pair per line, integers)
+        ``"3\\n41 999\\n43 850"``         (optional leading peak count, odd tokens)
+        ``"91.054 100\\n92.062 70"``      (exact-mass m/z as floats)
+
+    Decimal m/z values are rounded to the nearest integer so that they can
+    be looked up in the peaks_by_mz dict (which uses nominal integer keys).
+    Intensities are kept as-is (may be float for fractional abundances).
 
     Returns
     -------
-    list[tuple[int, int]]  In original order (not sorted).
+    list[tuple[int, float|int]]  In original order (not sorted).
     """
-    tokens = list(map(int, re.findall(r"\d+", peak_text)))
+    # Accept both integer and decimal numbers
+    raw = re.findall(r"\d+(?:\.\d+)?", peak_text)
+    tokens = [float(x) for x in raw]
     if len(tokens) < 2:
         return []
     # Even token count → interleaved mz/intensity pairs.
     # Odd  token count → first token is a peak count header; skip it.
     if len(tokens) % 2 != 0:
         tokens = tokens[1:]
-    return [(tokens[i], tokens[i + 1]) for i in range(0, len(tokens) - 1, 2)]
+    return [(round(tokens[i]), tokens[i + 1]) for i in range(0, len(tokens) - 1, 2)]
 
 
 def _best_passing_candidate(candidates: list) -> dict | None:
@@ -167,7 +174,10 @@ def write_exact_masses_sdf(results: list, output_path: str) -> int:
                 "compound_name": result["compound_name"],
                 "peaks":         defaultdict(list),   # nominal_mz -> [candidates]
             }
-        compounds[key]["peaks"][result["peak_mz"]].append(result["candidate"])
+        # Skip sentinel entries (candidate=None) added when a compound has no
+        # passing candidates at all — the compound is already registered above.
+        if result.get("candidate") is not None:
+            compounds[key]["peaks"][result["peak_mz"]].append(result["candidate"])
 
     # ---- Write one record per compound -----------------------------------
     records_written = 0
@@ -197,17 +207,23 @@ def write_exact_masses_sdf(results: list, output_path: str) -> int:
                     if best is not None:
                         new_peaks.append(("{:.6f}".format(best["ion_mass"]), intensity))
 
-            # Build modified fields dict (preserve original key order)
+            # Build modified fields dict (preserve original key order).
+            # If no exact masses were assigned for this compound, copy all
+            # fields unchanged so the original nominal peaks are preserved.
             modified: dict[str, str] = OrderedDict()
-            for k, v in fields.items():
-                if num_key and k == num_key:
-                    modified[k] = str(len(new_peaks))
-                elif peak_key and k == peak_key:
-                    modified[k] = "\n".join(
-                        "{} {}".format(m, i) for m, i in new_peaks
-                    )
-                else:
-                    modified[k] = v
+            if new_peaks:
+                for k, v in fields.items():
+                    if num_key and k == num_key:
+                        modified[k] = str(len(new_peaks))
+                    elif peak_key and k == peak_key:
+                        modified[k] = "\n".join(
+                            "{} {}".format(m, i) for m, i in new_peaks
+                        )
+                    else:
+                        modified[k] = v
+            else:
+                # No candidates passed — keep original fields untouched
+                modified.update(fields)
 
             # ---- Assemble the SDF record ---------------------------------
             parts: list[str] = []
@@ -247,3 +263,132 @@ def write_exact_sdf(results: list, output_path: str) -> int:
     Alias for :func:`write_exact_masses_sdf` (retained for compatibility).
     """
     return write_exact_masses_sdf(results, output_path)
+
+
+# ---------------------------------------------------------------------------
+# MSP (NIST format) writer — unit-mass → high-resolution conversion output
+# ---------------------------------------------------------------------------
+
+def exact_msp_path(input_path: str) -> str:
+    """
+    Derive the ``-EXACT.msp`` output path from the input file path.
+
+    Examples
+    --------
+    >>> exact_msp_path("spectra.sdf")
+    'spectra-EXACT.msp'
+    >>> exact_msp_path("data/nist.msp")
+    'data/nist-EXACT.msp'
+    """
+    p = Path(input_path)
+    return str(p.parent / (p.stem + "-EXACT.msp"))
+
+
+def write_exact_masses_msp(results: list, output_path: str) -> int:
+    """
+    Write one NIST MSP record per compound with exact masses in the peak list.
+
+    This is the unit-mass → high-resolution conversion output format.
+    Each confirmed peak (one with a passing candidate formula) is written
+    with the theoretical exact ion m/z (6 decimal places) and the original
+    relative intensity.  Peaks with no confirmed assignment are omitted.
+
+    Parameters
+    ----------
+    results     : list  Same list of result dicts as used by
+                        :func:`write_exact_masses_sdf`.
+    output_path : str   Path for the output ``.msp`` file.
+
+    Returns
+    -------
+    int  Number of MSP records written.
+    """
+    from .sdf_parser import find_field
+    from .constants import FORMULA_FIELD_CANDIDATES
+
+    # ---- Group results by record_index (same logic as SDF writer) ----------
+    compound_order: list[int] = []
+    compounds: dict[int, dict] = {}
+
+    for result in results:
+        key = result.get("record_index", id(result))
+        if key not in compounds:
+            compound_order.append(key)
+            compounds[key] = {
+                "fields":        dict(result["fields"]),
+                "compound_name": result["compound_name"],
+                "peaks":         defaultdict(list),
+            }
+        if result.get("candidate") is not None:
+            compounds[key]["peaks"][result["peak_mz"]].append(result["candidate"])
+
+    # ---- Write one MSP record per compound ---------------------------------
+    records_written = 0
+
+    with open(output_path, "w", encoding="utf-8") as fh:
+        for idx, key in enumerate(compound_order):
+            data        = compounds[key]
+            name        = data["compound_name"]
+            fields      = data["fields"]
+            peaks_by_mz = data["peaks"]
+
+            # Retrieve metadata from original fields
+            formula_str = find_field(fields, FORMULA_FIELD_CANDIDATES) or ""
+            mw_str = (
+                fields.get("MW")
+                or fields.get("Mw")
+                or fields.get("mw")
+                or fields.get("EXACT MASS")
+                or ""
+            )
+
+            # Build confirmed peak list (exact mass, intensity)
+            # Use _parse_peaks_with_intensity to recover original order + intensities
+            peak_key    = _find_field_key(fields, PEAK_FIELD_CANDIDATES)
+            mz_intensity: list = []
+            if peak_key and fields.get(peak_key):
+                mz_intensity = _parse_peaks_with_intensity(fields[peak_key])
+
+            new_peaks: list[tuple[str, float]] = []
+            for mz, intensity in mz_intensity:
+                if mz in peaks_by_mz:
+                    best = _best_passing_candidate(peaks_by_mz[mz])
+                    if best is not None:
+                        new_peaks.append(("{:.6f}".format(best["ion_mass"]), intensity))
+
+            # Separator between records
+            if idx > 0:
+                fh.write("\n")
+
+            # Write MSP header fields
+            fh.write("Name: {}\n".format(name))
+            if formula_str:
+                fh.write("Formula: {}\n".format(formula_str))
+            if mw_str:
+                # Write as integer nominal MW if it looks like a float with no
+                # significant decimal (e.g. "194.08037" → "194"); keep as-is
+                # if it is already an integer string like "194".
+                try:
+                    fh.write("MW: {}\n".format(int(float(mw_str))))
+                except ValueError:
+                    fh.write("MW: {}\n".format(mw_str))
+
+            # Comments: copy any COMMENTS / ORIGIN field if present
+            comments = (
+                fields.get("COMMENTS")
+                or fields.get("Comment")
+                or fields.get("ORIGIN")
+                or ""
+            )
+            if comments:
+                fh.write("Comments: {}\n".format(comments.strip()))
+
+            fh.write("Num Peaks: {}\n".format(len(new_peaks)))
+
+            # Write peaks — no trailing space, one pair per line
+            for exact_mz, intensity in new_peaks:
+                fh.write("{} {}\n".format(exact_mz, int(round(intensity))))
+
+            records_written += 1
+
+    return records_written

@@ -39,7 +39,8 @@ from .constants   import ELECTRON_MASS
 from .preflight   import run_preflight_checks
 from .filters     import FilterConfig, rank_candidates
 from .mol_parser  import parse_mol_block, extract_mol_block, parse_mol_block_full
-from .sdf_writer  import write_exact_masses_sdf, exact_sdf_path
+from .sdf_writer  import (write_exact_masses_sdf, exact_sdf_path,
+                           write_exact_masses_msp, exact_msp_path)
 
 
 def format_record(
@@ -54,6 +55,11 @@ def format_record(
     record_index: int = 0,
     ppm: float = None,
     fragmentation_rules: bool = False,
+    hr_input: bool = False,
+    hr_ppm: float = 20.0,
+    confidence: bool = False,
+    confidence_threshold: float = 0.0,
+    intensity_map: dict = None,
 ) -> str:
     """
     Process one SDF record and return the formatted result string.
@@ -77,6 +83,9 @@ def format_record(
                                 of the fixed Da tolerance.
     fragmentation_rules : bool  If True, annotate candidates with EI fragmentation
                                 rules (neutral losses and structure-based cleavages).
+    hr_input      : bool        If True, treat peak m/z as exact masses and match
+                                candidates within ±hr_ppm (high-resolution mode).
+    hr_ppm        : float       ppm tolerance for HR input mode (default 20).
     """
     # Prefer the <NAME> SDF data field over the MOL-block first line so that
     # records whose MOL block starts with "No Structure" still display the
@@ -98,7 +107,18 @@ def format_record(
 
     if formula_str is None:
         return "  [SKIP] No molecular formula field found for '{}'.\n".format(name)
-    if not nominal_mzs:
+
+    # In HR mode, use exact float m/z values from parse_peaks_float(); otherwise
+    # use the nominal integer list from get_formula_and_peaks().
+    if hr_input:
+        from .sdf_parser import parse_peaks_float as _ppf2, find_field as _ff2
+        from .constants import PEAK_FIELD_CANDIDATES
+        _peak_text = _ff2(record.get("fields", {}), PEAK_FIELD_CANDIDATES)
+        iter_mzs = _ppf2(_peak_text) if _peak_text else []
+    else:
+        iter_mzs = nominal_mzs  # list[int]
+
+    if not iter_mzs:
         return "  [SKIP] No mass spectral peaks found for '{}'.\n".format(name)
 
     try:
@@ -138,50 +158,114 @@ def format_record(
     )
     if show_isotope and parent_iso_str:
         lines.append("Isotope pattern : {}".format(parent_iso_str))
-    if ppm is not None:
+    if hr_input:
+        lines.append("Tolerance       : \u00b1{} ppm (HR input, per-peak Da varies)".format(hr_ppm))
+    elif ppm is not None:
         lines.append("Tolerance       : \u00b1{} ppm (per-peak Da varies)".format(ppm))
     else:
         lines.append("Tolerance       : \u00b1{} Da".format(tolerance))
-    lines.append("Peaks           : {}".format(len(nominal_mzs)))
+    lines.append("Peaks           : {}".format(len(iter_mzs)))
+    if hr_input:
+        lines.append("HR input        : yes (exact-mass spectrum, ppm matching)")
     if best_only:
         lines.append("Mode            : best-only (top-ranked candidate per peak)")
+    if confidence and not hr_input:
+        lines.append("Confidence      : yes (M+1/M+2 isotope, neutral-loss, DBE, stable-ion)")
     lines.append("=" * 72)
 
     mol_block = record.get("mol_block", "")
     original_fields = record.get("fields", {})
+
+    # Track how many SDF entries exist before the peak loop so we can detect
+    # compounds where no peak produced a candidate and still include them.
+    _sdf_count_before = len(sdf_results) if sdf_results is not None else 0
 
     # Tier-2 structure data (parsed once per record)
     mol_data = None
     if fragmentation_rules and mol_block:
         mol_data = parse_mol_block_full(mol_block)
 
-    for mz in nominal_mzs:
-        # Per-peak tolerance (ppm mode) or fixed Da
-        tol = mz * ppm / 1_000_000 if ppm is not None else tolerance
+    # ── Confidence mode: collect ALL candidates first, then score ──────────
+    _use_confidence = confidence and not hr_input
+    _all_candidates_by_mz: dict = {}   # {mz: [candidate, ...]}
 
-        candidates = find_fragment_candidates(
-            mz, parent, tol, electron_mode,
-            include_isotope_pattern=show_isotope,
-            filter_config=filter_config,
+    if _use_confidence:
+        for mz in iter_mzs:
+            if hr_input:
+                tol = mz * hr_ppm / 1_000_000
+            elif ppm is not None:
+                tol = mz * ppm / 1_000_000
+            else:
+                tol = tolerance
+            cands = find_fragment_candidates(
+                mz, parent, tol, electron_mode,
+                include_isotope_pattern=show_isotope,
+                filter_config=filter_config,
+            )
+            if fragmentation_rules and cands:
+                from .fragmentation_rules import (
+                    annotate_neutral_losses, get_structure_fragments, annotate_candidate,
+                )
+                nl_m = annotate_neutral_losses(mz, parent_neutral, parent, electron_mode, tol)
+                sf   = get_structure_fragments(mol_data) if mol_data else []
+                cands = [annotate_candidate(c, nl_m, sf) for c in cands]
+            _all_candidates_by_mz[int(round(mz))] = cands
+
+        # Scoring phase
+        _imap = intensity_map or {}
+        from .confidence import score_compound
+        _all_candidates_by_mz = score_compound(
+            all_candidates=_all_candidates_by_mz,
+            intensity_map=_imap,
+            parent_composition=parent,
+            parent_dbe=parent_dbe,
+            mol_block=mol_block if mol_block else None,
+            enable_fragmentation=fragmentation_rules,
+            fragmentation_rules_enabled=fragmentation_rules,
+            tolerance=tolerance if ppm is None else tolerance,
+            electron_mode=electron_mode,
+            n_passes=3,
         )
 
-        # Fragmentation rule annotation
-        if fragmentation_rules and candidates:
-            from .fragmentation_rules import (
-                annotate_neutral_losses, get_structure_fragments, annotate_candidate,
+    for mz in iter_mzs:
+        # Per-peak tolerance: HR ppm-based, global ppm-based, or fixed Da
+        if hr_input:
+            tol = mz * hr_ppm / 1_000_000
+        elif ppm is not None:
+            tol = mz * ppm / 1_000_000
+        else:
+            tol = tolerance
+
+        if _use_confidence:
+            # Use pre-scored candidates from the collection phase
+            candidates = _all_candidates_by_mz.get(int(round(mz)), [])
+        else:
+            candidates = find_fragment_candidates(
+                mz, parent, tol, electron_mode,
+                include_isotope_pattern=show_isotope,
+                filter_config=filter_config,
             )
-            nl_matches   = annotate_neutral_losses(mz, parent_neutral, parent, electron_mode, tol)
-            struct_frags = get_structure_fragments(mol_data) if mol_data else []
-            candidates   = [annotate_candidate(c, nl_matches, struct_frags) for c in candidates]
+            # Fragmentation rule annotation
+            if fragmentation_rules and candidates:
+                from .fragmentation_rules import (
+                    annotate_neutral_losses, get_structure_fragments, annotate_candidate,
+                )
+                nl_matches   = annotate_neutral_losses(mz, parent_neutral, parent, electron_mode, tol)
+                struct_frags = get_structure_fragments(mol_data) if mol_data else []
+                candidates   = [annotate_candidate(c, nl_matches, struct_frags) for c in candidates]
 
         # --- best-only mode: keep only the top-ranked candidate ---
         if best_only:
             if candidates:
-                ranked = rank_candidates(candidates)
+                ranked = rank_candidates(candidates) if not _use_confidence else candidates
                 best   = ranked[0]
                 # Drop peak if best candidate does not pass filters
                 if not best.get("filter_passed", True):
                     continue
+                # In confidence mode, skip peaks below the confidence threshold
+                if _use_confidence and confidence_threshold > 0:
+                    if best.get("confidence", 1.0) < confidence_threshold:
+                        continue
                 candidates = [best]
             else:
                 continue  # no candidates → peak deleted
@@ -194,7 +278,7 @@ def format_record(
                     "fields":        original_fields,
                     "compound_name": name,
                     "record_index":  record_index,
-                    "peak_mz":       mz,
+                    "peak_mz":       round(mz) if hr_input else mz,
                     "candidate":     c,
                 })
 
@@ -202,19 +286,22 @@ def format_record(
             continue
 
         if candidates:
-            lines.append("\n  m/z {:>5d}  \u2014  {} candidate(s)".format(
-                mz, len(candidates)))
+            _mz_str = "{:.6f}".format(mz) if hr_input else "{:d}".format(mz)
+            lines.append("\n  m/z {:>12}  \u2014  {} candidate(s)".format(
+                _mz_str, len(candidates)))
             show_filter = filter_config is not None
 
             if show_isotope:
                 filter_hdr = "  FILTER" if show_filter else ""
+                conf_hdr   = "  Conf  Evidence" if _use_confidence else ""
+                _delta_hdr = "Delta ppm" if hr_input else "Delta mass"
                 lines.append(
                     "    {:<14}  {:>13}  "
                     "{:>13}  {:>10}  {:>5}  "
-                    "Isotope pattern{}".format(
+                    "Isotope pattern{}{}".format(
                         "Formula", "Neutral mass",
-                        "Ion m/z", "Delta mass", "DBE",
-                        filter_hdr
+                        "Ion m/z", _delta_hdr, "DBE",
+                        filter_hdr, conf_hdr
                     )
                 )
                 lines.append(
@@ -222,34 +309,47 @@ def format_record(
                         "-" * 14, "-" * 13, "-" * 13,
                         "-" * 10, "-" * 5, "-" * 30
                     ) + ("  " + "-" * 6 if show_filter else "")
+                      + ("  " + "-" * 4 + "  " + "-" * 16 if _use_confidence else "")
                 )
                 for c in candidates:
                     flt  = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
                     rule = c.get("fragmentation_rule", "")
                     rule_tag = "  [{}]".format(rule) if rule else ""
+                    _delta = (
+                        "{:>+10.2f}".format(c["delta_mass"] / mz * 1e6)
+                        if hr_input and mz != 0
+                        else "{:>+10.6f}".format(c["delta_mass"])
+                    )
+                    conf_col = ""
+                    if _use_confidence:
+                        evid = " ".join(c.get("evidence_tags", []))[:16]
+                        conf_col = "  {:>3}%  {:<16}".format(
+                            c.get("confidence_pct", 50), evid)
                     lines.append(
                         "    {:<14}  "
                         "{:>13.6f}  "
                         "{:>13.6f}  "
-                        "{:>+10.6f}  "
+                        "{}  "
                         "{:>5.1f}  "
                         "{}".format(
                             c["formula"],
                             c["neutral_mass"],
                             c["ion_mass"],
-                            c["delta_mass"],
+                            _delta,
                             c["dbe"],
                             c.get("isotope_summary", "\u2014"),
-                        ) + (flt if show_filter else "") + rule_tag
+                        ) + (flt if show_filter else "") + rule_tag + conf_col
                     )
             else:
                 filter_hdr = "  FILTER" if show_filter else ""
+                conf_hdr   = "  Conf  Evidence" if _use_confidence else ""
+                _delta_hdr2 = "Delta ppm" if hr_input else "Delta mass"
                 lines.append(
                     "    {:<14}  {:>13}  "
-                    "{:>13}  {:>10}  {:>5}{}".format(
+                    "{:>13}  {:>10}  {:>5}{}{}".format(
                         "Formula", "Neutral mass",
-                        "Ion m/z", "Delta mass", "DBE",
-                        filter_hdr
+                        "Ion m/z", _delta_hdr2, "DBE",
+                        filter_hdr, conf_hdr
                     )
                 )
                 lines.append(
@@ -257,31 +357,58 @@ def format_record(
                         "-" * 14, "-" * 13, "-" * 13,
                         "-" * 10, "-" * 5
                     ) + ("  " + "-" * 6 if show_filter else "")
+                      + ("  " + "-" * 4 + "  " + "-" * 16 if _use_confidence else "")
                 )
                 for c in candidates:
                     flt  = ("  " + ("OK" if c.get("filter_passed", True) else "FAIL"))
                     rule = c.get("fragmentation_rule", "")
                     rule_tag = "  [{}]".format(rule) if rule else ""
+                    _delta2 = (
+                        "{:>+10.2f}".format(c["delta_mass"] / mz * 1e6)
+                        if hr_input and mz != 0
+                        else "{:>+10.6f}".format(c["delta_mass"])
+                    )
+                    conf_col = ""
+                    if _use_confidence:
+                        evid = " ".join(c.get("evidence_tags", []))[:16]
+                        conf_col = "  {:>3}%  {:<16}".format(
+                            c.get("confidence_pct", 50), evid)
                     lines.append(
                         "    {:<14}  "
                         "{:>13.6f}  "
                         "{:>13.6f}  "
-                        "{:>+10.6f}  "
+                        "{}  "
                         "{:>5.1f}".format(
                             c["formula"],
                             c["neutral_mass"],
                             c["ion_mass"],
-                            c["delta_mass"],
+                            _delta2,
                             c["dbe"],
-                        ) + (flt if show_filter else "") + rule_tag
+                        ) + (flt if show_filter else "") + rule_tag + conf_col
                     )
         else:
+            _mz_str2 = "{:.6f}".format(mz) if hr_input else "{:d}".format(mz)
             lines.append(
-                "\n  m/z {:>5d}  \u2014  no candidates "
-                "(outside formula constraints or invalid DBE)".format(mz)
+                "\n  m/z {:>12}  \u2014  no candidates "
+                "(outside formula constraints or invalid DBE)".format(_mz_str2)
             )
 
     lines.append("")
+
+    # Ensure this compound appears in the SDF output even when every peak had
+    # no candidate (e.g. all were rejected by the HD-check or other filters).
+    # A sentinel entry (peak_mz=None, candidate=None) is added so the writer
+    # can still emit the compound block with its original, unmodified fields.
+    if sdf_results is not None and len(sdf_results) == _sdf_count_before:
+        sdf_results.append({
+            "mol_block":     mol_block,
+            "fields":        original_fields,
+            "compound_name": name,
+            "record_index":  record_index,
+            "peak_mz":       None,   # sentinel: compound present, no peaks assigned
+            "candidate":     None,
+        })
+
     return "\n".join(lines)
 
 
@@ -297,7 +424,9 @@ def _process_record(args: tuple) -> tuple[str, list]:
     (output_text, sdf_results_for_this_record)
     """
     record, tolerance, electron_mode, hide_empty, show_isotope, \
-        best_only, filter_config, save_sdf, record_index, ppm, fragmentation_rules = args
+        best_only, filter_config, save_sdf, record_index, ppm, \
+        fragmentation_rules, hr_input, hr_ppm, \
+        confidence, confidence_threshold, intensity_map = args
     local_sdf: list = [] if save_sdf else None
     text = format_record(
         record,
@@ -311,6 +440,11 @@ def _process_record(args: tuple) -> tuple[str, list]:
         record_index=record_index,
         ppm=ppm,
         fragmentation_rules=fragmentation_rules,
+        hr_input=hr_input,
+        hr_ppm=hr_ppm,
+        confidence=confidence,
+        confidence_threshold=confidence_threshold,
+        intensity_map=intensity_map,
     )
     return text, local_sdf
 
@@ -498,7 +632,116 @@ examples:
         ),
     )
 
+    # ── High-resolution (HR) input mode ─────────────────────────────────────
+    hr_group = parser.add_argument_group(
+        "high-resolution input",
+        "Options for spectra stored as exact masses (e.g. QTOF, Orbitrap, ChemVista).",
+    )
+    hr_group.add_argument(
+        "--hr",
+        action="store_true",
+        default=False,
+        dest="hr",
+        help=(
+            "Treat peak m/z values as exact masses and match candidates within "
+            "±hr-ppm (default 20 ppm).  Use this when the input spectrum is "
+            "already high-resolution (e.g. ChemVista, MassBank HR, NIST QTOF)."
+        ),
+    )
+    hr_group.add_argument(
+        "--auto-hr",
+        action="store_true",
+        default=False,
+        dest="auto_hr",
+        help=(
+            "Auto-detect whether the input spectrum is high-resolution: if the "
+            "majority of m/z values above 10 Da have a fractional part > 0.010 Da, "
+            "enable HR mode automatically.  Overridden by --hr."
+        ),
+    )
+    hr_group.add_argument(
+        "--hr-ppm",
+        type=float,
+        default=20.0,
+        metavar="PPM",
+        dest="hr_ppm",
+        help="ppm tolerance used in HR input mode (default: 20 ppm).",
+    )
+    hr_group.add_argument(
+        "--output-msp",
+        type=str,
+        default=None,
+        metavar="FILE",
+        dest="output_msp",
+        help=(
+            "Write a NIST MSP file with theoretical exact ion masses substituting "
+            "the original peak m/z values.  Use '-auto' to write to "
+            "'<input>-EXACT.msp' next to the input file."
+        ),
+    )
+
+    # ── Confidence scoring ───────────────────────────────────────────────────
+    conf_group = parser.add_argument_group(
+        "confidence scoring",
+        "Multi-evidence confidence scoring for unit-mass EI spectra.",
+    )
+    conf_group.add_argument(
+        "--confidence",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable multi-evidence confidence scoring: M+1/M+2 isotope pattern, "
+            "neutral-loss cross-check, DBE upper bound, stable-ion library, "
+            "and even/odd-electron preference.  Adds a Conf%% and Evidence "
+            "column to the output table.  Not applicable in --hr mode."
+        ),
+    )
+    conf_group.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.0,
+        metavar="THRESH",
+        dest="confidence_threshold",
+        help=(
+            "In --best-only mode, skip peaks whose top candidate has confidence "
+            "< THRESH (0.0–1.0).  Requires --confidence.  Default: 0.0 (all shown)."
+        ),
+    )
+    conf_group.add_argument(
+        "--merge-structures",
+        type=str,
+        default=None,
+        metavar="FILE",
+        dest="merge_structures",
+        help=(
+            "Load a second SDF file and copy 2-D mol_blocks into the primary "
+            "records by name matching (exact → normalised → fuzzy Levenshtein). "
+            "Useful when the primary file is an MSP/MSPEC without structures and "
+            "a separate SDF contains the matching 2-D geometries."
+        ),
+    )
+
     return parser
+
+
+# ---------------------------------------------------------------------------
+# HR auto-detection helper
+# ---------------------------------------------------------------------------
+
+def _any_record_hr(records: list) -> bool:
+    """
+    Return True if any record in *records* contains a high-resolution peak list
+    (i.e. the majority of m/z values above 10 Da have a fractional part > 0.010).
+
+    Used to implement ``--auto-hr`` detection.
+    """
+    from .sdf_parser import detect_hr_peaks, find_field
+    from .constants import PEAK_FIELD_CANDIDATES
+    for record in records:
+        peak_text = find_field(record.get("fields", {}), PEAK_FIELD_CANDIDATES)
+        if peak_text and detect_hr_peaks(peak_text):
+            return True
+    return False
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -552,6 +795,33 @@ def main(argv: list[str] | None = None) -> None:
         print("[ERROR] No records found in the input file.", file=sys.stderr)
         sys.exit(1)
 
+    # ── Optional: merge 2-D structures from a separate SDF ──────────────────
+    if args.merge_structures:
+        try:
+            from .input_reader import read_records as _read_struct
+            from .mol_merger import merge_mol_blocks, match_summary
+            struct_recs = _read_struct(args.merge_structures)
+            summary = match_summary(records, struct_recs)
+            matched = sum(1 for _, _, s in summary if s != "no_match")
+            print(
+                "Merging 2-D structures from '{}': {}/{} records matched.\n".format(
+                    args.merge_structures, matched, len(records)
+                ),
+                flush=True,
+            )
+            for prim_name, matched_name, strategy in summary:
+                if strategy == "no_match":
+                    print("  [WARN] No structure match for '{}'".format(prim_name),
+                          file=sys.stderr)
+                elif strategy not in ("existing",):
+                    print("  [INFO] '{}' → '{}' ({})".format(
+                        prim_name, matched_name, strategy), flush=True)
+            records = merge_mol_blocks(records, struct_recs)
+        except FileNotFoundError:
+            print("[ERROR] --merge-structures file not found: '{}'".format(
+                args.merge_structures), file=sys.stderr)
+            sys.exit(1)
+
     # ── Optional: fetch 2-D structures from PubChem ──────────────────────────
     if args.fetch_structures:
         from .structure_fetcher import enrich_mol_blocks, _mol_block_has_atoms
@@ -575,21 +845,35 @@ def main(argv: list[str] | None = None) -> None:
             print("All records already have 2-D structures — skipping fetch.\n",
                   flush=True)
 
+    # Resolve HR input mode: explicit --hr flag, or --auto-hr if any record has
+    # exact-mass peaks (detect_hr_peaks heuristic).
+    hr_input = args.hr or (args.auto_hr and _any_record_hr(records))
+    hr_ppm   = args.hr_ppm
+
     electron_desc = {
         "remove": "positive-ion EI  (m/z = M_neutral - m_e)",
         "add":    "negative-ion EI  (m/z = M_neutral + m_e)",
         "none":   "no correction   (m/z = M_neutral)",
     }[args.electron_mode]
 
-    tol_display = (
-        "+/-{} ppm (per-peak)".format(args.ppm) if use_ppm
-        else "+/-{} Da".format(tolerance)
+    if hr_input:
+        tol_display = "+/-{} ppm (HR input, per-peak)".format(hr_ppm)
+    elif use_ppm:
+        tol_display = "+/-{} ppm (per-peak)".format(args.ppm)
+    else:
+        tol_display = "+/-{} Da".format(tolerance)
+
+    hr_desc = (
+        "yes (auto-detected)" if (args.auto_hr and not args.hr and hr_input)
+        else "yes" if hr_input
+        else "no"
     )
     print(
         "EI Fragment Exact-Mass Calculator\n"
-        "  SDF file            : {}\n"
+        "  Input file          : {}\n"
         "  Records found       : {}\n"
         "  Tolerance           : {}\n"
+        "  HR input mode       : {}\n"
         "  Electron mode       : {}  ({})\n"
         "  Isotope pattern     : {}\n"
         "  Best-only mode      : {}\n"
@@ -598,6 +882,7 @@ def main(argv: list[str] | None = None) -> None:
             args.sdf_file,
             len(records),
             tol_display,
+            hr_desc,
             args.electron_mode,
             electron_desc,
             "yes" if args.isotope else "no",
@@ -607,9 +892,37 @@ def main(argv: list[str] | None = None) -> None:
             "yes (Filter 6)" if args.rdkit_validation else "no",
         )
     )
+    if args.confidence and not hr_input:
+        print(
+            "  Confidence scoring  : yes (M+1/M+2 isotope, neutral-loss, "
+            "DBE bound, stable-ion, even/odd-electron)\n"
+            "  Conf threshold      : {}\n".format(
+                "{:.0%}".format(args.confidence_threshold)
+                if args.confidence_threshold > 0 else "none"
+            )
+        )
 
-    save_sdf = not args.no_save_sdf
-    all_sdf_results: list = [] if save_sdf else None
+    # Collect results when writing SDF *or* MSP output.
+    # --no-save-sdf only suppresses the SDF file; MSP still needs the data.
+    save_sdf    = not args.no_save_sdf
+    need_results = save_sdf or (args.output_msp is not None)
+    all_sdf_results: list = [] if need_results else None
+
+    # Pre-parse intensity maps for confidence scoring (picklable plain dicts)
+    use_confidence = args.confidence and not hr_input
+    if use_confidence:
+        if args.confidence_threshold > 0 and not args.best_only:
+            print("[WARN] --confidence-threshold has no effect without --best-only.",
+                  file=sys.stderr)
+        from .sdf_parser import find_field as _ff_conf
+        from .confidence import parse_intensity_map as _pim
+        from .constants import PEAK_FIELD_CANDIDATES
+        _imaps = [
+            _pim(_ff_conf(rec.get("fields", {}), PEAK_FIELD_CANDIDATES) or "")
+            for rec in records
+        ]
+    else:
+        _imaps = [{} for _ in records]
 
     workers = max(1, args.workers)
     worker_args = [
@@ -621,10 +934,15 @@ def main(argv: list[str] | None = None) -> None:
             args.isotope,
             args.best_only,
             filter_cfg,
-            save_sdf,
+            need_results,
             idx,
             args.ppm,
             args.fragmentation_rules,
+            hr_input,
+            hr_ppm,
+            use_confidence,
+            args.confidence_threshold,
+            _imaps[idx],
         )
         for idx, record in enumerate(records)
     ]
@@ -637,7 +955,7 @@ def main(argv: list[str] | None = None) -> None:
             text, sdf_part = _process_record(wa)
             print(text, flush=True)
             print("[{}/{}] done".format(i, total), flush=True)
-            if save_sdf and sdf_part:
+            if need_results:
                 all_sdf_results.extend(sdf_part)
     else:
         # ── Parallel path ─────────────────────────────────────────────────
@@ -650,7 +968,7 @@ def main(argv: list[str] | None = None) -> None:
                     pool.imap(_process_record, worker_args), 1):
                 print(text, flush=True)
                 print("[{}/{}] done".format(i, total), flush=True)
-                if save_sdf and sdf_part:
+                if need_results:
                     all_sdf_results.extend(sdf_part)
 
     if args.output:
@@ -662,3 +980,17 @@ def main(argv: list[str] | None = None) -> None:
         out_path = args.output_sdf or exact_sdf_path(args.sdf_file)
         n = write_exact_masses_sdf(all_sdf_results, out_path)
         print("Saved {} compound(s) to '{}'.".format(n, out_path))
+
+    # ── Optional MSP output ──────────────────────────────────────────────────
+    if args.output_msp is not None and all_sdf_results is not None:
+        msp_path = (
+            exact_msp_path(args.sdf_file)
+            if args.output_msp == "-auto"
+            else args.output_msp
+        )
+        n_msp = write_exact_masses_msp(all_sdf_results, msp_path)
+        print("Saved {} MSP record(s) to '{}'.".format(n_msp, msp_path))
+
+
+if __name__ == "__main__":
+    main()

@@ -6,7 +6,7 @@ Multi-format input reader for EI mass spectral data.
 Supported formats
 -----------------
 SDF  (.sdf, .sd)        — MDL Structure-Data File (V2000 MOL + named fields)
-MSP  (.msp)             — NIST Mass Spectral format
+MSP  (.msp, .mspec)     — NIST Mass Spectral format
 JDX  (.jdx, .jcamp, .dx) — JCAMP-DX mass spectrum
 CSV  (.csv, .tsv, .txt) — tabular peak lists (two layout variants)
 
@@ -74,7 +74,7 @@ def read_records(filepath: str) -> list[dict]:
 
     if ext in (".sdf", ".sd"):
         return _read_sdf(filepath)
-    if ext == ".msp":
+    if ext in (".msp", ".mspec"):
         return _read_msp(filepath)
     if ext in (".jdx", ".jcamp", ".dx"):
         return _read_jdx(filepath)
@@ -539,7 +539,7 @@ def _sniff_and_read(filepath: str) -> list[dict]:
 
     raise ValueError(
         f"Cannot determine format of {filepath!r}. "
-        "Supported extensions: .sdf, .msp, .jdx, .csv, .tsv"
+        "Supported extensions: .sdf, .msp, .mspec, .jdx, .csv, .tsv"
     )
 
 
