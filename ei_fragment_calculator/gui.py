@@ -54,23 +54,17 @@ _ELEMENTS_CSV  = _find_elements_csv()
 _SETTINGS_FILE = Path.home() / ".ei_fragment_calculator_gui.json"
 
 # ---------------------------------------------------------------------------
-# Colour palette  (VS Code Dark+ inspired)
+# Log colour palette (light theme)
 # ---------------------------------------------------------------------------
-_BG        = "#1e1e1e"
-_BG2       = "#252526"
-_BG3       = "#2d2d2d"
-_FG        = "#d4d4d4"
-_FG_DIM    = "#808080"
-_FG_BRIGHT = "#ffffff"
-_GREEN     = "#4ec994"
-_RED       = "#f44747"
-_ORANGE    = "#ce9178"
-_CYAN      = "#9cdcfe"
-_YELLOW    = "#dcdcaa"
-_BLUE      = "#569cd6"
-_PURPLE    = "#c586c0"
-_ACCENT    = "#0e639c"
-_ACCENT_H  = "#1177bb"
+_LOG_BG  = "#f8f8f8"
+_LOG_FG  = "#000000"
+_LOG_OK      = "#007000"
+_LOG_FAIL    = "#cc0000"
+_LOG_HEADER  = "#0055aa"
+_LOG_MZ      = "#6600aa"
+_LOG_ADDED   = "#007000"
+_LOG_WARN    = "#996600"
+_LOG_BRACKET = "#6600aa"
 
 # ---------------------------------------------------------------------------
 # Factory defaults (values the app ships with)
@@ -103,6 +97,7 @@ _FACTORY: dict = {
     "merge_structures":     "",
     "last_input_dir":       "",
     "last_output_dir":      "",
+    "mode":                 "gc",
     # enricher
     "e_no_pubchem":    False,
     "e_no_chebi":      False,
@@ -203,17 +198,16 @@ def _make_log(parent: tk.Widget) -> scrolledtext.ScrolledText:
     log = scrolledtext.ScrolledText(
         parent, state="disabled", wrap=tk.WORD,
         font=("Consolas", 9),
-        bg=_BG, fg=_FG, insertbackground=_FG,
-        selectbackground=_ACCENT, selectforeground=_FG_BRIGHT,
+        bg=_LOG_BG, fg=_LOG_FG,
         relief=tk.FLAT, borderwidth=0,
     )
-    log.tag_configure("ok",      foreground=_GREEN)
-    log.tag_configure("fail",    foreground=_RED)
-    log.tag_configure("header",  foreground=_CYAN)
-    log.tag_configure("mz",      foreground=_YELLOW)
-    log.tag_configure("added",   foreground=_GREEN)
-    log.tag_configure("warn",    foreground=_ORANGE)
-    log.tag_configure("bracket", foreground=_PURPLE)
+    log.tag_configure("ok",      foreground=_LOG_OK)
+    log.tag_configure("fail",    foreground=_LOG_FAIL)
+    log.tag_configure("header",  foreground=_LOG_HEADER)
+    log.tag_configure("mz",      foreground=_LOG_MZ)
+    log.tag_configure("added",   foreground=_LOG_ADDED)
+    log.tag_configure("warn",    foreground=_LOG_WARN)
+    log.tag_configure("bracket", foreground=_LOG_BRACKET)
     return log
 
 
@@ -225,50 +219,17 @@ def _clear_log(log: scrolledtext.ScrolledText) -> None:
 
 def _apply_style() -> None:
     s = ttk.Style()
-    try:
-        s.theme_use("clam")
-    except tk.TclError:
-        pass
-    s.configure(".",             background=_BG2, foreground=_FG)
-    s.configure("TFrame",        background=_BG2)
-    s.configure("TLabelframe",   background=_BG2, foreground=_FG,
-                relief="groove", borderwidth=1)
-    s.configure("TLabelframe.Label", background=_BG2, foreground=_CYAN,
-                font=("Segoe UI", 9, "bold"))
-    s.configure("TLabel",        background=_BG2, foreground=_FG)
-    s.configure("TCheckbutton",  background=_BG2, foreground=_FG,
-                indicatorcolor=_BG3)
-    s.map("TCheckbutton",        background=[("active", _BG2)])
-    s.configure("TRadiobutton",  background=_BG2, foreground=_FG)
-    s.map("TRadiobutton",        background=[("active", _BG2)])
-    s.configure("TEntry",        fieldbackground=_BG3, foreground=_FG,
-                insertcolor=_FG, borderwidth=1)
-    s.configure("TSpinbox",      fieldbackground=_BG3, foreground=_FG,
-                insertcolor=_FG, arrowcolor=_FG)
-    s.configure("TCombobox",     fieldbackground=_BG3, foreground=_FG)
-    s.configure("TButton",       background=_BG3, foreground=_FG,
-                borderwidth=1, focuscolor="none")
-    s.map("TButton",             background=[("active", "#505050"),
-                                              ("disabled", "#333")])
-    s.configure("Accent.TButton", background=_ACCENT, foreground=_FG_BRIGHT,
-                font=("Segoe UI", 9, "bold"), borderwidth=0)
-    s.map("Accent.TButton",       background=[("active",   _ACCENT_H),
-                                               ("disabled", "#444")])
-    s.configure("TNotebook",     background=_BG, tabmargins=[2, 5, 0, 0])
-    s.configure("TNotebook.Tab", background=_BG3, foreground=_FG_DIM,
-                padding=[14, 5])
-    s.map("TNotebook.Tab",       background=[("selected", _BG)],
-                                 foreground=[("selected", _FG_BRIGHT)])
-    s.configure("Treeview",      background=_BG3, foreground=_FG,
-                fieldbackground=_BG3, rowheight=22)
-    s.configure("Treeview.Heading", background=_BG2, foreground=_CYAN,
-                font=("Segoe UI", 9, "bold"))
-    s.map("Treeview",            background=[("selected", _ACCENT)],
-                                 foreground=[("selected", _FG_BRIGHT)])
-    s.configure("Horizontal.TProgressbar",
-                troughcolor=_BG3, background=_ACCENT,
-                bordercolor=_BG2, lightcolor=_ACCENT, darkcolor=_ACCENT)
-    s.configure("TSeparator",    background="#444")
+    for theme in ("vista", "winnative", "xpnative", "clam", "default"):
+        try:
+            s.theme_use(theme)
+            break
+        except tk.TclError:
+            continue
+    s.configure("Accent.TButton",
+        background="#0078D4", foreground="white",
+        font=("Segoe UI", 9, "bold"), borderwidth=0)
+    s.map("Accent.TButton",
+        background=[("active", "#106EBE"), ("disabled", "#AAAAAA"), ("pressed", "#005A9E")])
 
 
 def _sep(parent: tk.Widget) -> None:
@@ -293,59 +254,166 @@ class _CalcTab(ttk.Frame):
     # ── Build UI ─────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
-        # ── I/O Section ──────────────────────────────────────────────────────
+        # ── Files Section ────────────────────────────────────────────────────
         io = ttk.LabelFrame(self, text=" Files ", padding=8)
         io.pack(fill=tk.X, pady=(0, 6))
         io.columnconfigure(1, weight=1)
 
-        ttk.Label(io, text="Input SDF:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        # Row 0: Spectral data
+        ttk.Label(io, text="Spectral data:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self._in_var = tk.StringVar()
         self._in_var.trace_add("write", self._update_out_sdf)
         ttk.Entry(io, textvariable=self._in_var).grid(
             row=0, column=1, sticky=tk.EW, padx=(6, 4))
         ttk.Button(io, text="Browse…", command=self._browse_in).grid(
             row=0, column=2, padx=(0, 2))
+        ttk.Label(io, text="MSP · MSPEC · SDF · JDX · CSV",
+                  foreground="#666666").grid(row=0, column=3, padx=6, sticky=tk.W)
 
-        ttk.Label(io, text="Output SDF:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        ttk.Entry(io, textvariable=self._out_sdf).grid(
+        # Row 1: Structures SDF
+        ttk.Label(io, text="Structures SDF:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self._merge_sdf_var = tk.StringVar()
+        ttk.Entry(io, textvariable=self._merge_sdf_var).grid(
             row=1, column=1, sticky=tk.EW, padx=(6, 4))
-        ttk.Button(io, text="Browse…", command=self._browse_out_sdf).grid(
+        ttk.Button(io, text="Browse…", command=self._browse_merge_sdf).grid(
             row=1, column=2, padx=(0, 2))
+        ttk.Label(io, text="Optional — for M+1/M+2 isotope scoring",
+                  foreground="#666666").grid(row=1, column=3, padx=6, sticky=tk.W)
 
-        ttk.Label(io, text="Output MSP:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        ttk.Entry(io, textvariable=self._out_msp).grid(
+        # Row 2: Output SDF
+        ttk.Label(io, text="Output SDF:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Entry(io, textvariable=self._out_sdf).grid(
             row=2, column=1, sticky=tk.EW, padx=(6, 4))
-        ttk.Button(io, text="Browse…", command=self._browse_out_msp).grid(
+        ttk.Button(io, text="Browse…", command=self._browse_out_sdf).grid(
             row=2, column=2, padx=(0, 2))
-        ttk.Label(io, text="(optional — NIST MSP with exact ion masses)",
-                  foreground=_FG_DIM).grid(row=2, column=3, padx=6, sticky=tk.W)
 
-        ttk.Label(io, text="Log to file:").grid(row=3, column=0, sticky=tk.W, pady=2)
-        self._log_file_var = tk.StringVar()
-        ttk.Entry(io, textvariable=self._log_file_var).grid(
+        # Row 3: Output MSP
+        ttk.Label(io, text="Output MSP:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Entry(io, textvariable=self._out_msp).grid(
             row=3, column=1, sticky=tk.EW, padx=(6, 4))
-        ttk.Button(io, text="Browse…", command=self._browse_log_file).grid(
+        ttk.Button(io, text="Browse…", command=self._browse_out_msp).grid(
             row=3, column=2, padx=(0, 2))
-        ttk.Label(io, text="(optional — leave blank to show in window only)",
-                  foreground=_FG_DIM).grid(row=3, column=3, padx=6, sticky=tk.W)
+        ttk.Label(io, text="Optional — exact-mass MSP",
+                  foreground="#666666").grid(row=3, column=3, padx=6, sticky=tk.W)
 
-        # ── Main Options ─────────────────────────────────────────────────────
-        opt = ttk.LabelFrame(self, text=" Main Options ", padding=8)
-        opt.pack(fill=tk.X, pady=(0, 6))
+        # Row 4: Log to file
+        ttk.Label(io, text="Log to file:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self._log_file_var = tk.StringVar()
+        ttk.Entry(io, textvariable=self._log_file_var, width=40).grid(
+            row=4, column=1, sticky=tk.EW, padx=(6, 4))
+        ttk.Button(io, text="Browse…", command=self._browse_log_file).grid(
+            row=4, column=2, padx=(0, 2))
+        ttk.Label(io, text="(optional)",
+                  foreground="#666666").grid(row=4, column=3, padx=6, sticky=tk.W)
 
-        # Row 0 — tolerance (Da / ppm) + workers
-        r0 = ttk.Frame(opt); r0.pack(fill=tk.X, pady=(0, 4))
+        # ── Mode LabelFrame ──────────────────────────────────────────────────
+        mode_fr = ttk.LabelFrame(self, text=" Mode ", padding=8)
+        mode_fr.pack(fill=tk.X, pady=(0, 6))
+
+        self._mode_var = tk.StringVar(value="gc")
+
+        # Left radio: GC
+        gc_sub = ttk.Frame(mode_fr)
+        gc_sub.pack(side=tk.LEFT, padx=(0, 24))
+        ttk.Radiobutton(gc_sub, text="GC / Unit-Mass (Low Resolution)",
+                        variable=self._mode_var, value="gc",
+                        command=self._on_mode_change).pack(anchor=tk.W)
+        ttk.Label(gc_sub,
+                  text="Tolerance \u00b10.5 Da  \u00b7  Confidence scoring ON  \u00b7  H-deficiency filter relaxed",
+                  foreground="#666666").pack(anchor=tk.W)
+
+        # Right radio: HRAM
+        hr_sub = ttk.Frame(mode_fr)
+        hr_sub.pack(side=tk.LEFT)
+        ttk.Radiobutton(hr_sub, text="HRAM (High-Resolution Accurate Mass)",
+                        variable=self._mode_var, value="hram",
+                        command=self._on_mode_change).pack(anchor=tk.W)
+        ttk.Label(hr_sub,
+                  text="Auto-detect HR peaks  \u00b7  \u00b120 ppm  \u00b7  Best-only ON",
+                  foreground="#666666").pack(anchor=tk.W)
+
+        # ── Toggle row ───────────────────────────────────────────────────────
+        toggle_fr = ttk.Frame(self)
+        toggle_fr.pack(fill=tk.X, pady=(0, 4))
+        self._adv_open = False
+        self._adv_toggle = ttk.Button(toggle_fr, text="\u25b6  Advanced Settings",
+                                      command=self._toggle_advanced)
+        self._adv_toggle.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toggle_fr, text="Save as Default",
+                   command=self._save_defaults).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toggle_fr, text="Reset to Factory",
+                   command=self._reset_defaults).pack(side=tk.LEFT)
+
+        # ── Collapsible advanced container ───────────────────────────────────
+        self._adv_container = ttk.Frame(self)
+        self._adv_container.pack(fill=tk.X)
+        self._adv_frame = ttk.LabelFrame(self._adv_container,
+                                         text=" Advanced Settings ", padding=8)
+        # do NOT pack self._adv_frame yet — it starts collapsed
+        self._build_advanced(self._adv_frame)
+
+        # ── Package status (compact inline row) ──────────────────────────────
+        pkg_fr = ttk.Frame(self)
+        pkg_fr.pack(fill=tk.X, pady=(2, 4))
+        ttk.Label(pkg_fr, text="Packages:", foreground="#666666").pack(
+            side=tk.LEFT, padx=(0, 6))
+        _PKG_STATUS = [
+            ("rdkit",        "RDKit",       "Filter 6 – SMILES/ring validation"),
+            ("sdf_enricher", "sdf-enricher","SDF Enricher tab – fill metadata"),
+            ("splashpy",     "splashpy",    "SPLASH spectral hash"),
+            ("matplotlib",   "matplotlib",  "Workflow diagrams"),
+        ]
+        for imp, label, tip in _PKG_STATUS:
+            ok = importlib.util.find_spec(imp) is not None
+            icon = "\u2713" if ok else "\u2717"
+            color = "#007000" if ok else "#cc0000"
+            lbl = ttk.Label(pkg_fr, text="{} {}".format(icon, label),
+                            foreground=color)
+            lbl.pack(side=tk.LEFT, padx=(0, 12))
+            _tooltip(lbl, "{}\n{}".format(tip,
+                "Installed \u2713" if ok else "Not installed — pip install {}".format(imp)))
+
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
+
+        # ── Run row ──────────────────────────────────────────────────────────
+        run_fr = ttk.Frame(self)
+        run_fr.pack(fill=tk.X, pady=(0, 4))
+        self._run_btn = ttk.Button(run_fr, text="  Exactify!  ",
+                                   style="Accent.TButton", command=self._run)
+        self._run_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(run_fr, text="Clear",
+                   command=lambda: _clear_log(self._log)).pack(side=tk.LEFT, padx=(0, 6))
+        self._open_btn = ttk.Button(run_fr, text="Open Output Folder",
+                                    state="disabled", command=self._open_folder)
+        self._open_btn.pack(side=tk.LEFT)
+        self._status = tk.StringVar(value="Ready.")
+        ttk.Label(run_fr, textvariable=self._status).pack(side=tk.RIGHT)
+
+        self._pb = ttk.Progressbar(self, mode="indeterminate",
+                                   style="Horizontal.TProgressbar")
+        self._pb.pack(fill=tk.X, pady=(0, 4))
+
+        # ── Log ──────────────────────────────────────────────────────────────
+        log_fr = ttk.LabelFrame(self, text=" Output ", padding=4)
+        log_fr.pack(fill=tk.BOTH, expand=True)
+        self._log = _make_log(log_fr)
+        self._log.pack(fill=tk.BOTH, expand=True)
+
+    def _build_advanced(self, parent: ttk.LabelFrame) -> None:
+        """Populate the collapsible Advanced Settings panel."""
+        # Row 0 — tolerance (Da / ppm) + workers + electron mode
+        r0 = ttk.Frame(parent); r0.pack(fill=tk.X, pady=(0, 4))
         self._ppm_mode = tk.BooleanVar()
         ttk.Radiobutton(r0, text="Da", variable=self._ppm_mode, value=False,
                         command=self._on_tol_mode).pack(side=tk.LEFT)
         ttk.Radiobutton(r0, text="ppm", variable=self._ppm_mode, value=True,
                         command=self._on_tol_mode).pack(side=tk.LEFT, padx=(2, 6))
-        self._tol_lbl = ttk.Label(r0, text="Tolerance ±Da:")
+        self._tol_lbl = ttk.Label(r0, text="Tolerance \u00b1Da:")
         self._tol_lbl.pack(side=tk.LEFT)
         self._tol = tk.StringVar()
         self._tol_spin = _spin(r0, self._tol, 0.05, 2.0, 0.05)
         self._tol_spin.pack(side=tk.LEFT, padx=(4, 4))
-        self._ppm_lbl = ttk.Label(r0, text="Tolerance ±ppm:")
+        self._ppm_lbl = ttk.Label(r0, text="Tolerance \u00b1ppm:")
         self._ppm_lbl.pack(side=tk.LEFT)
         self._ppm_val = tk.StringVar()
         self._ppm_spin = _spin(r0, self._ppm_val, 1.0, 50.0, 1.0)
@@ -365,7 +433,7 @@ class _CalcTab(ttk.Frame):
         self._elec = tk.StringVar()
         for val, lbl, tip in [
             ("remove", "remove  (EI +)", "Subtract m_e — standard positive-ion EI"),
-            ("add",    "add     (EI −)", "Add m_e — negative-ion EI"),
+            ("add",    "add     (EI \u2212)", "Add m_e — negative-ion EI"),
             ("none",   "none",           "No correction"),
         ]:
             rb = ttk.Radiobutton(r0, text=lbl, variable=self._elec, value=val)
@@ -373,7 +441,7 @@ class _CalcTab(ttk.Frame):
             _tooltip(rb, tip)
 
         # Row 1 — toggles
-        r1 = ttk.Frame(opt); r1.pack(fill=tk.X, pady=(0, 4))
+        r1 = ttk.Frame(parent); r1.pack(fill=tk.X, pady=(0, 4))
         self._best_only           = tk.BooleanVar()
         self._hide_empty          = tk.BooleanVar()
         self._show_iso            = tk.BooleanVar()
@@ -395,7 +463,7 @@ class _CalcTab(ttk.Frame):
              "and add the MOL block to the output SDF. Requires internet."),
             (self._frag_rules, "Fragmentation rules",
              "Annotate candidates with EI fragmentation rules: neutral losses "
-             "(H2O, CO, HCl…) and structure-based cleavages (α-cleavage, McLafferty)"),
+             "(H2O, CO, HCl\u2026) and structure-based cleavages (\u03b1-cleavage, McLafferty)"),
             (self._rdkit_validation, "RDKit validation (Filter 6)",
              "Reject candidates with unknown element symbols via RDKit. "
              "Requires: pip install rdkit-pypi"),
@@ -405,7 +473,7 @@ class _CalcTab(ttk.Frame):
             _tooltip(cb, tip)
 
         # Row 2 — HR input mode
-        r2 = ttk.Frame(opt); r2.pack(fill=tk.X, pady=(0, 4))
+        r2 = ttk.Frame(parent); r2.pack(fill=tk.X, pady=(0, 4))
         self._hr_mode  = tk.BooleanVar()
         self._auto_hr  = tk.BooleanVar()
         self._hr_ppm   = tk.StringVar()
@@ -413,7 +481,7 @@ class _CalcTab(ttk.Frame):
         cb_hr.pack(side=tk.LEFT, padx=(0, 4))
         _tooltip(cb_hr,
             "Treat peak m/z values as exact masses (high-resolution mode).\n"
-            "Matches candidates within ±HR ppm instead of the fixed Da tolerance.\n"
+            "Matches candidates within \u00b1HR ppm instead of the fixed Da tolerance.\n"
             "Use for spectra from QTOF / Orbitrap / ChemVista / MassBank HR.")
         cb_ahr = ttk.Checkbutton(r2, text="Auto-detect HR", variable=self._auto_hr)
         cb_ahr.pack(side=tk.LEFT, padx=(0, 16))
@@ -426,19 +494,19 @@ class _CalcTab(ttk.Frame):
         _tooltip(hr_spin, "ppm tolerance for HR input matching (default: 20 ppm).")
 
         # Row 3 — Confidence scoring
-        r3 = ttk.Frame(opt); r3.pack(fill=tk.X, pady=(0, 4))
+        r3 = ttk.Frame(parent); r3.pack(fill=tk.X, pady=(0, 4))
         self._confidence      = tk.BooleanVar()
         self._conf_threshold  = tk.StringVar()
         cb_conf = ttk.Checkbutton(r3, text="Confidence Scoring", variable=self._confidence)
         cb_conf.pack(side=tk.LEFT, padx=(0, 4))
         _tooltip(cb_conf,
             "Enable v1.8 unit-mass confidence scoring:\n"
-            "  A. ¹³C M+1 isotope match\n"
+            "  A. \u00b9\u00b3C M+1 isotope match\n"
             "  B. M+2 heavy-atom isotope (S, Cl, Br)\n"
-            "  C. Neutral-loss cross-check (CO, H₂O, HCN, …)\n"
+            "  C. Neutral-loss cross-check (CO, H\u2082O, HCN, \u2026)\n"
             "  D. Complementary ion pairs\n"
             "  E. DBE plausibility + even/odd-electron rule\n"
-            "  F. Stable-ion library (tropylium, phenyl, …)\n"
+            "  F. Stable-ion library (tropylium, phenyl, \u2026)\n"
             "Adds Conf% and Evidence columns to the output table.\n"
             "Ignored when --hr / --auto-hr is active (HR mode has exact mass).")
         ttk.Label(r3, text="Min confidence %:").pack(side=tk.LEFT, padx=(8, 0))
@@ -448,18 +516,10 @@ class _CalcTab(ttk.Frame):
             "In --best-only mode, skip peaks whose top candidate has\n"
             "confidence below this threshold (0 = keep all, default).")
 
-        ttk.Label(r3, text="Merge structures SDF:").pack(side=tk.LEFT)
-        self._merge_sdf_var = tk.StringVar()
-        ttk.Entry(r3, textvariable=self._merge_sdf_var, width=30).pack(
-            side=tk.LEFT, padx=(4, 4))
-        ttk.Button(r3, text="Browse…",
-                   command=self._browse_merge_sdf).pack(side=tk.LEFT, padx=(0, 6))
-        _tooltip_label(r3, "Optional SDF with 2-D structures for M+1/M+2 isotope scoring")
-
         # ── Filter Options ───────────────────────────────────────────────────
-        flt = ttk.LabelFrame(self, text=" Algorithm Filters  (all ON by default) ",
+        flt = ttk.LabelFrame(parent, text=" Algorithm Filters  (all ON by default) ",
                              padding=8)
-        flt.pack(fill=tk.X, pady=(0, 6))
+        flt.pack(fill=tk.X, pady=(4, 0))
 
         fA = ttk.Frame(flt); fA.pack(fill=tk.X, pady=(0, 4))
         self._no_n  = tk.BooleanVar()
@@ -469,13 +529,13 @@ class _CalcTab(ttk.Frame):
         self._no_sm = tk.BooleanVar()
         for var, lbl, tip in [
             (self._no_n,  "Disable Nitrogen Rule",
-             "McLafferty: odd nominal m/z ↔ odd N count for even-electron ions"),
+             "McLafferty: odd nominal m/z \u2194 odd N count for even-electron ions"),
             (self._no_hd, "Disable H-Deficiency",
              "Pretsch: reject DBE/C > max_ring_ratio (extraordinarily H-poor)"),
             (self._no_ls, "Disable Lewis / Senior",
-             "Senior 1951: valence-sum must be even and ≥ 2×(atoms−1)"),
+             "Senior 1951: valence-sum must be even and \u2265 2\u00d7(atoms\u22121)"),
             (self._no_is, "Disable Isotope Score",
-             "Gross: reject if |theo% − obs%| sum exceeds isotope_tolerance pp"),
+             "Gross: reject if |theo% \u2212 obs%| sum exceeds isotope_tolerance pp"),
             (self._no_sm, "Disable SMILES Constraints",
              "Weininger: fragment DBE cannot exceed ring count of parent molecule"),
         ]:
@@ -487,68 +547,46 @@ class _CalcTab(ttk.Frame):
         ttk.Label(fB, text="Isotope tolerance (pp):").pack(side=tk.LEFT)
         self._iso_tol = tk.StringVar()
         _spin(fB, self._iso_tol, 1.0, 100.0, 1.0).pack(side=tk.LEFT, padx=(4, 24))
-        _tooltip_label(fB, "Max Σ|theo% − obs%| deviation; default 30 pp")
+        _tooltip_label(fB, "Max \u03a3|theo% \u2212 obs%| deviation; default 30 pp")
 
         ttk.Label(fB, text="Max ring ratio  (DBE/C):").pack(side=tk.LEFT)
         self._ring = tk.StringVar()
         _spin(fB, self._ring, 0.1, 2.0, 0.05).pack(side=tk.LEFT, padx=(4, 0))
         _tooltip_label(fB, "H-deficiency upper bound; default 0.5")
 
-        # ── Default management ───────────────────────────────────────────────
-        def_fr = ttk.Frame(self)
-        def_fr.pack(fill=tk.X, pady=(0, 4))
-        ttk.Button(def_fr, text="💾  Save as Default",
-                   command=self._save_defaults).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(def_fr, text="↩  Reset to Factory",
-                   command=self._reset_defaults).pack(side=tk.LEFT)
+    # ── Mode change ──────────────────────────────────────────────────────────
 
-        # ── Package status (compact inline row) ──────────────────────────────
-        pkg_fr = ttk.Frame(self)
-        pkg_fr.pack(fill=tk.X, pady=(2, 4))
-        ttk.Label(pkg_fr, text="Packages:", foreground=_FG_DIM).pack(
-            side=tk.LEFT, padx=(0, 6))
-        _PKG_STATUS = [
-            ("rdkit",        "RDKit",       "Filter 6 – SMILES/ring validation"),
-            ("sdf_enricher", "sdf-enricher","SDF Enricher tab – fill metadata"),
-            ("splashpy",     "splashpy",    "SPLASH spectral hash"),
-            ("matplotlib",   "matplotlib",  "Workflow diagrams"),
-        ]
-        for imp, label, tip in _PKG_STATUS:
-            ok = importlib.util.find_spec(imp) is not None
-            icon = "✓" if ok else "✗"
-            color = _GREEN if ok else _RED
-            lbl = ttk.Label(pkg_fr, text="{} {}".format(icon, label),
-                            foreground=color)
-            lbl.pack(side=tk.LEFT, padx=(0, 12))
-            _tooltip(lbl, "{}\n{}".format(tip,
-                "Installed ✓" if ok else "Not installed — pip install {}".format(imp)))
+    def _on_mode_change(self) -> None:
+        """Apply GC or HRAM preset to the advanced settings."""
+        mode = self._mode_var.get()
+        if mode == "gc":
+            self._tol.set("0.5")
+            self._ppm_mode.set(False)
+            self._on_tol_mode()
+            self._best_only.set(True)
+            self._confidence.set(True)
+            self._no_hd.set(True)
+            self._ring.set("1.0")
+            self._auto_hr.set(False)
+            self._hr_mode.set(False)
+        else:  # hram
+            self._auto_hr.set(True)
+            self._hr_ppm.set("20.0")
+            self._hr_mode.set(False)
+            self._best_only.set(True)
+            self._confidence.set(False)
+            self._no_hd.set(False)
+            self._ring.set("0.5")
 
-        _sep(self)
-
-        # ── Run row ──────────────────────────────────────────────────────────
-        run_fr = ttk.Frame(self)
-        run_fr.pack(fill=tk.X, pady=(0, 4))
-        self._run_btn = ttk.Button(run_fr, text="▶  Run",
-                                   style="Accent.TButton", command=self._run)
-        self._run_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(run_fr, text="Clear", command=lambda: _clear_log(self._log)
-                   ).pack(side=tk.LEFT, padx=(0, 6))
-        self._open_btn = ttk.Button(run_fr, text="📂  Open output folder",
-                                    state="disabled", command=self._open_folder)
-        self._open_btn.pack(side=tk.LEFT)
-        self._status = tk.StringVar(value="Ready.")
-        ttk.Label(run_fr, textvariable=self._status, foreground=_FG_DIM
-                  ).pack(side=tk.RIGHT)
-
-        self._pb = ttk.Progressbar(self, mode="indeterminate",
-                                   style="Horizontal.TProgressbar")
-        self._pb.pack(fill=tk.X, pady=(0, 4))
-
-        # ── Log ──────────────────────────────────────────────────────────────
-        log_fr = ttk.LabelFrame(self, text=" Output ", padding=4)
-        log_fr.pack(fill=tk.BOTH, expand=True)
-        self._log = _make_log(log_fr)
-        self._log.pack(fill=tk.BOTH, expand=True)
+    def _toggle_advanced(self) -> None:
+        if self._adv_open:
+            self._adv_frame.pack_forget()
+            self._adv_toggle.configure(text="\u25b6  Advanced Settings")
+            self._adv_open = False
+        else:
+            self._adv_frame.pack(fill=tk.X, pady=(0, 6))
+            self._adv_toggle.configure(text="\u25bc  Advanced Settings")
+            self._adv_open = True
 
     # ── Settings helpers ─────────────────────────────────────────────────────
 
@@ -594,6 +632,7 @@ class _CalcTab(ttk.Frame):
         self._iso_tol.set(str(s["isotope_tolerance"]))
         self._ring.set(str(s["max_ring_ratio"]))
         self._workers.set(str(s["workers"]))
+        self._mode_var.set(s["mode"])
 
     def _save_defaults(self) -> None:
         try:
@@ -623,6 +662,7 @@ class _CalcTab(ttk.Frame):
             s["isotope_tolerance"]   = float(self._iso_tol.get())
             s["max_ring_ratio"]      = float(self._ring.get())
             s["workers"]             = max(1, int(float(self._workers.get())))
+            s["mode"]                = self._mode_var.get()
             s.save()
             self._status.set("Defaults saved.")
         except Exception as exc:
@@ -659,7 +699,7 @@ class _CalcTab(ttk.Frame):
         path = filedialog.asksaveasfilename(
             initialdir=init_dir,
             initialfile=init_file,
-            title="Save exact-mass SDF as…",
+            title="Save exact-mass SDF as\u2026",
             defaultextension=".sdf",
             filetypes=[("SDF files", "*.sdf"), ("All files", "*.*")],
         )
@@ -673,7 +713,7 @@ class _CalcTab(ttk.Frame):
         path = filedialog.asksaveasfilename(
             initialdir=init_dir,
             initialfile=init_file,
-            title="Save exact-mass MSP as…",
+            title="Save exact-mass MSP as\u2026",
             defaultextension=".msp",
             filetypes=[("MSP files", "*.msp"), ("All files", "*.*")],
         )
@@ -683,7 +723,7 @@ class _CalcTab(ttk.Frame):
 
     def _browse_log_file(self) -> None:
         path = filedialog.asksaveasfilename(
-            title="Save text log as…",
+            title="Save text log as\u2026",
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
@@ -786,7 +826,7 @@ class _CalcTab(ttk.Frame):
 
         self._run_btn.configure(state="disabled")
         self._open_btn.configure(state="disabled")
-        self._status.set("Running…")
+        self._status.set("Running\u2026")
         self._pb.start(12)
         self._running = True
         _clear_log(self._log)
@@ -844,7 +884,7 @@ class _ElementTab(ttk.Frame):
                 "Changes are written to  data/elements.csv  "
                 "and take effect after restarting the application."
             ),
-            foreground=_FG_DIM, wraplength=860, justify=tk.LEFT,
+            foreground="#666666", wraplength=860, justify=tk.LEFT,
         )
         info.pack(anchor=tk.W, pady=(0, 6))
 
@@ -879,18 +919,18 @@ class _ElementTab(ttk.Frame):
         btn_fr = ttk.Frame(self)
         btn_fr.pack(fill=tk.X, pady=(6, 0))
 
-        ttk.Button(btn_fr, text="➕  Add Row",    command=self._add_row
+        ttk.Button(btn_fr, text="\u2795  Add Row",    command=self._add_row
                    ).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(btn_fr, text="🗑  Delete Row", command=self._delete_row
+        ttk.Button(btn_fr, text="\U0001f5d1  Delete Row", command=self._delete_row
                    ).pack(side=tk.LEFT, padx=(0, 16))
-        ttk.Button(btn_fr, text="💾  Save to elements.csv",
+        ttk.Button(btn_fr, text="\U0001f4be  Save to elements.csv",
                    style="Accent.TButton", command=self._save_csv
                    ).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(btn_fr, text="↺  Reload from disk", command=self._load_csv
+        ttk.Button(btn_fr, text="\u21ba  Reload from disk", command=self._load_csv
                    ).pack(side=tk.LEFT)
 
         self._elem_status = tk.StringVar(value="")
-        ttk.Label(btn_fr, textvariable=self._elem_status, foreground=_FG_DIM
+        ttk.Label(btn_fr, textvariable=self._elem_status, foreground="#666666"
                   ).pack(side=tk.RIGHT)
 
     # ── CSV I/O ──────────────────────────────────────────────────────────────
@@ -1055,22 +1095,22 @@ class _EnrichTab(ttk.Frame):
         _spin(rB, self._delay, 0.0, 5.0, 0.1).pack(side=tk.LEFT, padx=4)
 
         def_fr = ttk.Frame(self); def_fr.pack(fill=tk.X, pady=(0, 4))
-        ttk.Button(def_fr, text="💾  Save as Default",
+        ttk.Button(def_fr, text="\U0001f4be  Save as Default",
                    command=self._save_defaults).pack(side=tk.LEFT, padx=(0, 6))
 
         _sep(self)
 
         run_fr = ttk.Frame(self); run_fr.pack(fill=tk.X, pady=(0, 4))
-        self._run_btn = ttk.Button(run_fr, text="▶  Enrich",
+        self._run_btn = ttk.Button(run_fr, text="\u25b6  Enrich",
                                    style="Accent.TButton", command=self._run)
         self._run_btn.pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(run_fr, text="Clear",
                    command=lambda: _clear_log(self._log)).pack(side=tk.LEFT, padx=(0, 6))
-        self._open_btn = ttk.Button(run_fr, text="📂  Open output folder",
+        self._open_btn = ttk.Button(run_fr, text="\U0001f4c2  Open output folder",
                                     state="disabled", command=self._open_folder)
         self._open_btn.pack(side=tk.LEFT)
         self._status = tk.StringVar(value="Ready.")
-        ttk.Label(run_fr, textvariable=self._status, foreground=_FG_DIM
+        ttk.Label(run_fr, textvariable=self._status, foreground="#666666"
                   ).pack(side=tk.RIGHT)
 
         self._pb = ttk.Progressbar(self, mode="indeterminate",
@@ -1121,7 +1161,7 @@ class _EnrichTab(ttk.Frame):
 
     def _browse_out(self) -> None:
         path = filedialog.asksaveasfilename(
-            title="Save enriched SDF as…",
+            title="Save enriched SDF as\u2026",
             defaultextension=".sdf",
             filetypes=[("SDF files", "*.sdf"), ("All files", "*.*")],
         )
@@ -1171,7 +1211,7 @@ class _EnrichTab(ttk.Frame):
 
         self._run_btn.configure(state="disabled")
         self._open_btn.configure(state="disabled")
-        self._status.set("Enriching…")
+        self._status.set("Enriching\u2026")
         self._pb.start(12)
         self._running = True
         _clear_log(self._log)
@@ -1197,7 +1237,7 @@ class _EnrichTab(ttk.Frame):
                 from .structure_fetcher import enrich_mol_blocks, _mol_block_has_atoms
                 missing = sum(1 for r in records if not _mol_block_has_atoms(r.get("mol_block", "")))
                 if missing:
-                    print("\nFetching 2-D structures from PubChem ({} record(s) without structure)…".format(missing))
+                    print("\nFetching 2-D structures from PubChem ({} record(s) without structure)\u2026".format(missing))
                     def _prog(done, total, name):
                         print("  [{}/{}] {}".format(done, total, name or "(unnamed)"))
                     enrich_mol_blocks(records, progress_callback=_prog)
@@ -1258,7 +1298,7 @@ class _PackagesTab(ttk.Frame):
                 "Optional packages extend functionality. "
                 "Click Install to add missing packages using pip."
             ),
-            foreground=_FG_DIM,
+            foreground="#666666",
         ).pack(anchor=tk.W, pady=(0, 6))
 
         tv_fr = ttk.Frame(self)
@@ -1272,12 +1312,12 @@ class _PackagesTab(ttk.Frame):
             self._tree.column(col, width=w, stretch=(col == "Required for"))
         self._tree.pack(fill=tk.X)
 
-        self._tree.tag_configure("ok",      foreground=_GREEN)
-        self._tree.tag_configure("missing", foreground=_RED)
+        self._tree.tag_configure("ok",      foreground="#007000")
+        self._tree.tag_configure("missing", foreground="#cc0000")
 
         btn_fr = ttk.Frame(self)
         btn_fr.pack(fill=tk.X, pady=(0, 6))
-        ttk.Button(btn_fr, text="↺  Refresh",
+        ttk.Button(btn_fr, text="\u21ba  Refresh",
                    command=self._refresh).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(btn_fr, text="Install selected",
                    command=self._install_selected).pack(side=tk.LEFT, padx=(0, 6))
@@ -1294,7 +1334,7 @@ class _PackagesTab(ttk.Frame):
         self._tree.delete(*self._tree.get_children())
         for imp, pip_name, purpose, _ in _PKGS:
             installed = importlib.util.find_spec(imp) is not None
-            status    = "✓ installed" if installed else "✗ missing"
+            status    = "\u2713 installed" if installed else "\u2717 missing"
             tag       = "ok" if installed else "missing"
             self._tree.insert("", tk.END, iid=imp,
                               values=(imp, pip_name, purpose, status), tags=(tag,))
@@ -1327,7 +1367,7 @@ class _PackagesTab(ttk.Frame):
         old_o, old_e = sys.stdout, sys.stderr
         sys.stdout = rd; sys.stderr = rd
         for pkg in packages:
-            print("Installing {}…".format(pkg))
+            print("Installing {}\u2026".format(pkg))
             try:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", pkg],
@@ -1337,7 +1377,7 @@ class _PackagesTab(ttk.Frame):
                 if result.returncode != 0:
                     print("pip stderr:\n" + result.stderr)
                 else:
-                    print("✓ {} installed successfully.\n".format(pkg))
+                    print("\u2713 {} installed successfully.\n".format(pkg))
             except Exception as exc:
                 print("ERROR: {}\n".format(exc))
         sys.stdout = old_o; sys.stderr = old_e
@@ -1389,7 +1429,7 @@ def _tooltip(widget: tk.Widget, text: str) -> None:
 
 
 def _tooltip_label(parent: tk.Widget, text: str) -> None:
-    lbl = ttk.Label(parent, text="ⓘ", foreground=_FG_DIM, cursor="question_arrow")
+    lbl = ttk.Label(parent, text="\u24d8", foreground="#666666", cursor="question_arrow")
     lbl.pack(side=tk.LEFT, padx=(2, 12))
     _ToolTip(lbl, text)
 
@@ -1426,7 +1466,6 @@ class EIFragmentApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("EI Fragment Exact-Mass Calculator  v{}".format(_get_version()))
-        self.configure(background=_BG)
         self.minsize(860, 700)
         self.geometry("1000x800")
         _apply_style()
@@ -1447,7 +1486,7 @@ class EIFragmentApp(tk.Tk):
         self._banner_var = tk.StringVar()
         self._banner_bar = tk.Label(
             self, textvariable=self._banner_var,
-            background="#5a3e00", foreground="#ffd27f",
+            background="#FFF4CE", foreground="#5D4037",
             font=("Segoe UI", 9), anchor=tk.W, padx=8, pady=4,
         )
         self._banner_var.trace_add("write", self._toggle_banner)
@@ -1476,7 +1515,7 @@ class EIFragmentApp(tk.Tk):
                     '    pip install "ei-fragment-calculator[enrich]"\n\n'
                     "Then restart this application."
                 ),
-                font=("Consolas", 10), foreground=_FG_DIM, justify=tk.LEFT,
+                font=("Consolas", 10), foreground="#666666", justify=tk.LEFT,
             ).pack(anchor=tk.NW)
             nb.add(ph, text="  SDF Enricher  ")
 
