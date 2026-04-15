@@ -197,7 +197,7 @@ def test_filter_config_defaults():
     assert cfg.isotope_score      is True
     assert cfg.smiles_constraints is True
     assert cfg.isotope_tolerance  == 30.0
-    assert cfg.max_ring_ratio     == 0.5
+    assert cfg.max_ring_ratio     == 1.0
 
 
 def test_filter_config_all_disabled():

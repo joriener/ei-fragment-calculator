@@ -216,6 +216,21 @@ def find_fragment_candidates(
         return candidates
 
     # ------------------------------------------------------------------
+    # Parent mass-defect-per-Da (mDa/Da): used as a ranking heuristic.
+    # EI fragment ions tend to have a similar per-Da mass defect to their
+    # parent compound (same elemental balance).  Storing the deviation of
+    # each candidate from the parent's value lets rank_candidates() prefer
+    # chemically plausible formulas (e.g. C6H5 over C5HO at m/z 77 for an
+    # aromatic parent) even when a spurious O-rich formula is numerically
+    # closer to the integer nominal m/z.
+    # ------------------------------------------------------------------
+    _parent_neutral = exact_mass(parent_composition)
+    _parent_ion     = ion_mass(_parent_neutral, electron_mode)
+    _parent_nominal = round(_parent_ion)
+    _parent_mdd     = ((_parent_ion - _parent_nominal) / _parent_nominal * 1000.0
+                       if _parent_nominal > 0 else None)
+
+    # ------------------------------------------------------------------
     # Branch-and-bound enumeration
     # ------------------------------------------------------------------
     # Sort elements heaviest-first — this maximises early pruning because
@@ -259,14 +274,22 @@ def find_fragment_candidates(
         if not is_valid_dbe(dbe):
             continue
 
+        # per-Da mass defect deviation from parent (mDa/Da)
+        if _parent_mdd is not None and nominal_mz > 0:
+            _cand_mdd = (measured - nominal_mz) / nominal_mz * 1000.0
+            _mdd_dev  = abs(_cand_mdd - _parent_mdd)
+        else:
+            _mdd_dev  = None
+
         entry: dict = {
-            "formula":       hill_formula(composition),
-            "neutral_mass":  round(neutral, 6),
-            "ion_mass":      round(measured, 6),
-            "delta_mass":    round(delta, 6),
-            "dbe":           dbe,
-            "electron_mode": electron_mode,
-            "_composition":  composition,   # needed by filter pipeline
+            "formula":        hill_formula(composition),
+            "neutral_mass":   round(neutral, 6),
+            "ion_mass":       round(measured, 6),
+            "delta_mass":     round(delta, 6),
+            "dbe":            dbe,
+            "electron_mode":  electron_mode,
+            "_composition":   composition,  # needed by filter pipeline
+            "_mdd_deviation": _mdd_dev,     # mass-defect similarity score
         }
 
         # --- optional isotope pattern ---

@@ -70,7 +70,12 @@ class FilterConfig:
     smiles_constraints  : bool   Apply ring-count upper bound from MOL block (default True).
     rdkit_validation    : bool   Validate elements via RDKit periodic table (default False).
     isotope_tolerance   : float  Max deviation in percentage points (default 30.0).
-    max_ring_ratio      : float  Max DBE/C ratio for HD check (default 0.5).
+    max_ring_ratio      : float  Max DBE/C ratio for HD check (default 1.0).
+                                 The previous default of 0.5 incorrectly
+                                 rejected valid aromatic fragment ions such as
+                                 phenyl (C6H5, DBE/C=0.75) and tropylium
+                                 (C7H7, DBE/C=0.64).  1.0 retains these while
+                                 still filtering degenerate H-poor formulas.
     """
     nitrogen_rule       : bool  = True
     hd_check            : bool  = True
@@ -79,7 +84,7 @@ class FilterConfig:
     smiles_constraints  : bool  = True
     rdkit_validation    : bool  = False
     isotope_tolerance   : float = 30.0
-    max_ring_ratio      : float = 0.5
+    max_ring_ratio      : float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -439,26 +444,40 @@ def rank_candidates(candidates: list) -> list:
 
     Sorting key (in priority order):
         1. ``filter_passed=True`` before ``filter_passed=False``.
-        2. Smallest ``|delta_mass|`` — closest match to the nominal m/z.
-        3. Lowest ``isotope_score`` — best agreement with the observed
+        2. Smallest ``_mdd_deviation`` — per-Da mass-defect similarity to the
+           parent compound (mDa/Da units, set by
+           :func:`~ei_fragment_calculator.calculator.find_fragment_candidates`).
+           EI fragment ions share a similar mass-defect signature with their
+           parent molecule, so this criterion correctly favours stable
+           aromatic hydrocarbon ions (e.g. C6H5 at 77.039, C7H7 at 91.054)
+           over spurious O-rich formulas that are numerically closer to the
+           integer nominal m/z (e.g. C5HO at 77.002).
+           If the key is absent (legacy callers), falls back to
+           ``|delta_mass|``-only ranking.
+        3. Smallest ``|delta_mass|`` — tiebreaker: closest to nominal m/z.
+        4. Lowest ``isotope_score`` — best agreement with the observed
            isotope pattern (lower score = smaller deviation).
 
     If filters have not been applied (no ``filter_passed`` key), all
-    candidates are treated as passing and ranked by mass accuracy alone.
+    candidates are treated as passing.
 
     Parameters
     ----------
     candidates : list[dict]   Candidate dicts as returned by
-                              :func:`find_fragment_candidates`.
+                              :func:`~ei_fragment_calculator.calculator.find_fragment_candidates`.
 
     Returns
     -------
     list[dict]  Same candidates, sorted best-first (original list unchanged).
     """
     def _sort_key(c: dict):
-        passed       = 0 if c.get("filter_passed", True) else 1  # 0 = better
-        delta_abs    = abs(c.get("delta_mass", 0.0))
-        iso_score    = c.get("isotope_score", 0.0)
-        return (passed, delta_abs, iso_score)
+        passed    = 0 if c.get("filter_passed", True) else 1   # 0 = better
+        mdd_dev   = c.get("_mdd_deviation")                    # None = no parent info
+        delta_abs = abs(c.get("delta_mass", 0.0))
+        iso_score = c.get("isotope_score", 0.0)
+        # Use mass-defect similarity as primary quality criterion when available.
+        # Fall back to |delta_mass| for candidates without parent context.
+        primary = mdd_dev if mdd_dev is not None else float("inf")
+        return (passed, primary, delta_abs, iso_score)
 
     return sorted(candidates, key=_sort_key)
