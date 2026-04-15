@@ -38,7 +38,11 @@ try:
 except ImportError:
     _HAS_ENRICHER = False
 
-__version__ = "1.6.3"
+try:
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("ei-fragment-calculator")
+except Exception:
+    __version__ = "1.8.0"   # fallback when package metadata is unavailable
 __author__  = "Your Name"
 __license__ = "MIT"
 
