@@ -106,6 +106,7 @@ _FACTORY: dict = {
     "e_no_splash":     False,
     "e_overwrite":     False,
     "e_delay":         0.5,
+    "e_fetch_mol":     True,
 }
 
 # ---------------------------------------------------------------------------
@@ -898,6 +899,11 @@ class _EnrichTab(ttk.Frame):
             _tooltip(cb, tip)
 
         rB = ttk.Frame(src); rB.pack(fill=tk.X)
+        self._fetch_mol = tk.BooleanVar()
+        cb_mol = ttk.Checkbutton(rB, text="Fetch 2-D structures (PubChem)",
+                                  variable=self._fetch_mol)
+        cb_mol.pack(side=tk.LEFT, padx=(0, 14))
+        _tooltip(cb_mol, "Download MOL block from PubChem for records without a 2-D structure")
         self._overwr = tk.BooleanVar()
         ttk.Checkbutton(rB, text="Overwrite existing values", variable=self._overwr
                         ).pack(side=tk.LEFT, padx=(0, 24))
@@ -943,6 +949,7 @@ class _EnrichTab(ttk.Frame):
         self._no_sp.set(s["e_no_splash"])
         self._overwr.set(s["e_overwrite"])
         self._delay.set(str(s["e_delay"]))
+        self._fetch_mol.set(s["e_fetch_mol"])
 
     def _save_defaults(self) -> None:
         s = self._settings
@@ -954,6 +961,7 @@ class _EnrichTab(ttk.Frame):
         s["e_no_splash"]     = self._no_sp.get()
         s["e_overwrite"]     = self._overwr.get()
         s["e_delay"]         = float(self._delay.get())
+        s["e_fetch_mol"]     = self._fetch_mol.get()
         s.save()
         self._status.set("Defaults saved.")
 
@@ -1026,11 +1034,12 @@ class _EnrichTab(ttk.Frame):
         _clear_log(self._log)
 
         rd = _Redirector(self._log, self.winfo_toplevel())
-        threading.Thread(target=self._worker, args=(sdf, cfg, out, rd),
+        fetch_mol = self._fetch_mol.get() and not self._no_pc.get()
+        threading.Thread(target=self._worker, args=(sdf, cfg, out, rd, fetch_mol),
                          daemon=True).start()
 
     def _worker(self, sdf_path: str, cfg: dict, out_path: str | None,
-                rd: _Redirector) -> None:
+                rd: _Redirector, fetch_mol: bool = True) -> None:
         from sdf_enricher.sdf_io   import read_sdf, write_sdf, enriched_path
         from sdf_enricher.enricher import EnrichConfig, enrich_records
         old_o, old_e = sys.stdout, sys.stderr
@@ -1041,6 +1050,16 @@ class _EnrichTab(ttk.Frame):
             print("SDF Enricher\n  Input   : {}\n  Records : {}\n".format(
                 sdf_path, len(records)))
             enrich_records(records, config=EnrichConfig(**cfg), verbose=True)
+            if fetch_mol:
+                from .structure_fetcher import enrich_mol_blocks, _mol_block_has_atoms
+                missing = sum(1 for r in records if not _mol_block_has_atoms(r.get("mol_block", "")))
+                if missing:
+                    print("\nFetching 2-D structures from PubChem ({} record(s) without structure)…".format(missing))
+                    def _prog(done, total, name):
+                        print("  [{}/{}] {}".format(done, total, name or "(unnamed)"))
+                    enrich_mol_blocks(records, progress_callback=_prog)
+                else:
+                    print("\nAll records already have 2-D structures — skipping PubChem fetch.")
             final_out = out_path or enriched_path(sdf_path)
             n = write_sdf(records, final_out)
             print("\nSaved {} record(s) to '{}'.".format(n, final_out))
