@@ -574,8 +574,11 @@ examples:
         help="Max isotope score deviation in percentage points (default: 30.0).",
     )
     filter_group.add_argument(
-        "--max-ring-ratio", type=float, default=0.5, metavar="RATIO",
-        help="Max DBE/C ratio for H-deficiency check (default: 0.5).",
+        "--max-ring-ratio", type=float, default=1.0, metavar="RATIO",
+        help="Max DBE/C ratio for H-deficiency check (default: 1.0). "
+             "Value 1.0 correctly allows aromatic fragment ions such as "
+             "phenyl (DBE/C=0.75) and tropylium (DBE/C=0.64); the previous "
+             "default of 0.5 incorrectly rejected them.",
     )
     parser.add_argument(
         "--no-save-sdf", action="store_true", default=False,

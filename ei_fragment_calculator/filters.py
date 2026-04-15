@@ -177,12 +177,25 @@ LEWIS_SENIOR_REF = (
 )
 
 
-def apply_lewis_senior(composition: dict) -> tuple:
+def apply_lewis_senior(composition: dict, dbe: float = 0.0) -> tuple:
     """
     Apply Lewis octet rule and Senior valence-sum graph rules.
 
     Rule 1: sum of all valences must be even.
+             **Relaxed for radical (odd-electron) species**: in EI mass
+             spectrometry many fragment ions are radical cations (M•+,
+             formed by alpha-cleavage or homolytic bond breaking).  These
+             have a half-integer DBE, one unpaired electron, and
+             legitimately possess an odd total valence.  Rule 1 is therefore
+             only enforced for even-electron (closed-shell) ions where DBE
+             is a whole number.
     Rule 2: sum of all valences >= 2 * (atom_count - 1).
+
+    Parameters
+    ----------
+    composition : dict[str, int]  Elemental composition.
+    dbe         : float           Degree of unsaturation (from calculate_dbe).
+                                  Half-integer value flags odd-electron species.
 
     Returns (passed: bool, message: str).
     Ref: Senior 1951.
@@ -200,10 +213,13 @@ def apply_lewis_senior(composition: dict) -> tuple:
     if atom_count == 0:
         return True, ""
 
-    if total_valence % 2 != 0:
+    # Rule 1: even valence sum — skip for radical (odd-electron) ions.
+    # A radical has a half-integer DBE: 2*DBE is odd.
+    is_radical = (round(dbe * 2) % 2) != 0  # 2×DBE is odd ↔ half-integer DBE ↔ radical
+    if not is_radical and total_valence % 2 != 0:
         return False, (
-            "Lewis/Senior Rule 1 violation: sum of valences = {} (odd). "
-            "Ref: Senior 1951".format(total_valence)
+            "Lewis/Senior Rule 1 violation: sum of valences = {} (odd) "
+            "for even-electron ion. Ref: Senior 1951".format(total_valence)
         )
 
     min_required = 2 * (atom_count - 1)
@@ -400,7 +416,7 @@ def run_all_filters(
             all_passed = False
 
     if config.lewis_senior:
-        passed, msg = apply_lewis_senior(composition)
+        passed, msg = apply_lewis_senior(composition, dbe)
         details["lewis_senior"] = msg if msg else "OK"
         if not passed:
             all_passed = False
