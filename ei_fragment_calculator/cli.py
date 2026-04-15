@@ -606,7 +606,7 @@ examples:
             "For records with no 2-D structure (atom count = 0), query PubChem "
             "by CAS number / compound name and insert the fetched MOL block into "
             "the output SDF.  Requires an internet connection.  Rate-limited to "
-            "≤5 requests/second per PubChem guidelines."
+            "<=5 requests/second per PubChem guidelines."
         ),
     )
     parser.add_argument(
@@ -715,7 +715,7 @@ examples:
         dest="merge_structures",
         help=(
             "Load a second SDF file and copy 2-D mol_blocks into the primary "
-            "records by name matching (exact → normalised → fuzzy Levenshtein). "
+            "records by name matching (exact -> normalised -> fuzzy Levenshtein). "
             "Useful when the primary file is an MSP/MSPEC without structures and "
             "a separate SDF contains the matching 2-D geometries."
         ),
@@ -814,7 +814,7 @@ def main(argv: list[str] | None = None) -> None:
                     print("  [WARN] No structure match for '{}'".format(prim_name),
                           file=sys.stderr)
                 elif strategy not in ("existing",):
-                    print("  [INFO] '{}' → '{}' ({})".format(
+                    print("  [INFO] '{}' -> '{}' ({})".format(
                         prim_name, matched_name, strategy), flush=True)
             records = merge_mol_blocks(records, struct_recs)
         except FileNotFoundError:

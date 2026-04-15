@@ -225,12 +225,53 @@ def write_exact_masses_sdf(results: list, output_path: str) -> int:
                 # No candidates passed — keep original fields untouched
                 modified.update(fields)
 
+            # ---- ChemVista / standard SDF compatibility fixes ---------------
+
+            # 1. Ensure <NAME> field exists as the very first data field.
+            #    Many SDF importers (ChemVista, ChemDraw, …) require an explicit
+            #    <NAME> field; they do NOT read the MOL-block header line 1.
+            if not _find_field_key(modified, ["NAME", "COMPOUND NAME", "COMPOUND_NAME"]):
+                name_first: dict[str, str] = OrderedDict()
+                name_first["NAME"] = name
+                name_first.update(modified)
+                modified = name_first
+
+            # 2. Add <FORMULA> alias when only <MOLECULAR FORMULA> is present.
+            #    ChemVista uses FORMULA; keep MOLECULAR FORMULA too for NIST tools.
+            if (_find_field_key(modified, ["MOLECULAR FORMULA"])
+                    and not _find_field_key(modified, ["FORMULA"])):
+                mol_form_key = _find_field_key(modified, ["MOLECULAR FORMULA"])
+                with_formula: dict[str, str] = OrderedDict()
+                for k, v in modified.items():
+                    with_formula[k] = v
+                    if k == mol_form_key:
+                        with_formula["FORMULA"] = v   # duplicate as FORMULA
+                modified = with_formula
+
+            # 3. Ensure <NUM PEAKS> field exists immediately before the peak
+            #    field.  ChemVista and MSP-aware tools expect it.
+            actual_peak_key = _find_field_key(modified, PEAK_FIELD_CANDIDATES)
+            if actual_peak_key and not _find_field_key(modified, _NUM_PEAKS_CANDIDATES):
+                n_peaks = len(new_peaks) if new_peaks else len(
+                    _parse_peaks_with_intensity(modified.get(actual_peak_key, ""))
+                )
+                with_num: dict[str, str] = OrderedDict()
+                for k, v in modified.items():
+                    if k == actual_peak_key:
+                        with_num["NUM PEAKS"] = str(n_peaks)
+                    with_num[k] = v
+                modified = with_num
+
             # ---- Assemble the SDF record ---------------------------------
             parts: list[str] = []
 
-            # MOL block (or minimal placeholder if absent)
+            # MOL block (or minimal placeholder if absent).
+            # Always terminate with M  END so downstream parsers are happy.
             if mol_blk:
-                parts.append(mol_blk)
+                stripped_blk = mol_blk.rstrip()
+                if not re.search(r"M\s+END\s*$", stripped_blk):
+                    stripped_blk += "\nM  END"
+                parts.append(stripped_blk)
             else:
                 parts.append(
                     "{}\n     EI_FRAG\n\n"
