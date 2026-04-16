@@ -495,3 +495,131 @@ def test_example_jdx_file():
     assert len(records) == 2
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: Extended PubChem enrichment tests (B1/B2)
+# ---------------------------------------------------------------------------
+
+def test_fetch_cid_from_name_mock():
+    """Test B1: _fetch_cid_from_name with mock urllib (uses mocked response)."""
+    from ei_fragment_calculator.structure_fetcher import _fetch_cid_from_name
+    from unittest.mock import patch, MagicMock
+    import json
+
+    mock_response_data = {
+        "IdentifierList": {
+            "CID": [7311]  # Caffeine CID
+        }
+    }
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_file = MagicMock()
+        mock_file.read.return_value = json.dumps(mock_response_data).encode("utf-8")
+        mock_file.__enter__.return_value = mock_file
+        mock_urlopen.return_value = mock_file
+
+        cid = _fetch_cid_from_name("Caffeine")
+        assert cid == 7311
+
+
+def test_fetch_properties_from_pubchem_mock():
+    """Test B1: _fetch_properties_from_pubchem with mock urllib."""
+    from ei_fragment_calculator.structure_fetcher import _fetch_properties_from_pubchem
+    from unittest.mock import patch, MagicMock
+    import json
+
+    mock_response_data = {
+        "PropertyTable": {
+            "Properties": [
+                {
+                    "CID": 7311,
+                    "CanonicalSMILES": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+                    "InChIKey": "RYYVLZVUVIJVGH-UHFFFAOYSA-N",
+                    "MonoisotopicMass": 194.08044,
+                    "MolecularFormula": "C8H10N4O2",
+                    "IUPACName": "1,3,7-trimethylpurine-2,6-dione",
+                }
+            ]
+        }
+    }
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_file = MagicMock()
+        mock_file.read.return_value = json.dumps(mock_response_data).encode("utf-8")
+        mock_file.__enter__.return_value = mock_file
+        mock_urlopen.return_value = mock_file
+
+        props = _fetch_properties_from_pubchem(7311)
+        assert props is not None
+        assert props["SMILES"] == "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"
+        assert props["INCHIKEY"] == "RYYVLZVUVIJVGH-UHFFFAOYSA-N"
+        assert props["PUBCHEM_EXACT_MW"] == 194.08044
+        assert props["MOLECULAR_FORMULA"] == "C8H10N4O2"
+
+
+def test_validate_formula_match():
+    """Test B2: validate_formula with matching masses (no warning)."""
+    from ei_fragment_calculator.structure_fetcher import validate_formula
+    from io import StringIO
+    import sys
+
+    fields = {
+        "MOLECULAR FORMULA": "C8H10N4O2",
+        "PUBCHEM_EXACT_MW": 194.0804,
+    }
+
+    # Capture stdout to verify no warning is emitted
+    old_stdout = sys.stdout
+    sys.stdout = StringIO()
+    result = validate_formula(fields, "Caffeine")
+    output = sys.stdout.getvalue()
+    sys.stdout = old_stdout
+
+    assert result is True
+    assert "[WARN]" not in output
+
+
+def test_validate_formula_mismatch():
+    """Test B2: validate_formula with mismatched masses (emits warning)."""
+    from ei_fragment_calculator.structure_fetcher import validate_formula
+    from io import StringIO
+    import sys
+
+    fields = {
+        "MOLECULAR FORMULA": "C8H10N4O2",
+        "PUBCHEM_EXACT_MW": 200.0,  # Significantly different from 194.08
+    }
+
+    # Capture stdout to verify warning is emitted
+    old_stdout = sys.stdout
+    sys.stdout = StringIO()
+    result = validate_formula(fields, "TestCompound")
+    output = sys.stdout.getvalue()
+    sys.stdout = old_stdout
+
+    assert result is True  # Never aborts
+    assert "[WARN]" in output
+    assert "mismatch" in output.lower()
+
+
+def test_validate_formula_missing_data():
+    """Test B2: validate_formula with missing data (skips validation)."""
+    from ei_fragment_calculator.structure_fetcher import validate_formula
+    from io import StringIO
+    import sys
+
+    fields = {
+        "MOLECULAR FORMULA": "C8H10N4O2",
+        # Missing PUBCHEM_EXACT_MW
+    }
+
+    # Capture stdout to verify no warning is emitted
+    old_stdout = sys.stdout
+    sys.stdout = StringIO()
+    result = validate_formula(fields, "TestCompound")
+    output = sys.stdout.getvalue()
+    sys.stdout = old_stdout
+
+    assert result is True
+    assert "[WARN]" not in output
+
+

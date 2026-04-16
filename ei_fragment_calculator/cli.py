@@ -61,6 +61,7 @@ def format_record(
     confidence_threshold: float = 0.0,
     intensity_map: dict = None,
     strict_structure: bool = False,
+    reference_dict: dict = None,
 ) -> str:
     """
     Process one SDF record and return the formatted result string.
@@ -186,6 +187,15 @@ def format_record(
     if fragmentation_rules and mol_block:
         mol_data = parse_mol_block_full(mol_block)
 
+    # ── Reference SDF lookup: check for exact compound match ──────────────────
+    _reference_peaks = {}  # {nominal_mz: exact_mass} if matched
+    if reference_dict:
+        ref_entry = reference_dict.get(name.lower())
+        if ref_entry:
+            _reference_peaks = ref_entry
+            lines.append("[INFO] Reference match found for '{}': {} peaks".format(
+                name, len(ref_entry)))
+
     # ── Confidence mode: collect ALL candidates first, then score ──────────
     _use_confidence = confidence and not hr_input
     _all_candidates_by_mz: dict = {}   # {mz: [candidate, ...]}
@@ -247,7 +257,25 @@ def format_record(
         else:
             tol = tolerance
 
-        if _use_confidence:
+        # ── Check for reference match first ──────────────────────────────────
+        candidates = []
+        nominal_mz = int(round(mz))
+        if nominal_mz in _reference_peaks:
+            ref_exact_mass = _reference_peaks[nominal_mz]
+            # Create a reference candidate (skip enumeration entirely)
+            ref_candidate = {
+                "formula": "REF",
+                "neutral_mass": ref_exact_mass,  # Use exact mass as neutral
+                "ion_mass": ref_exact_mass,
+                "delta_mass": 0.0,
+                "dbe": 0.0,
+                "filter_passed": True,
+                "confidence": 0.99,
+                "confidence_pct": 99,
+                "evidence_tags": ["REF_SDF"],
+            }
+            candidates = [ref_candidate]
+        elif _use_confidence:
             # Use pre-scored candidates from the collection phase
             candidates = _all_candidates_by_mz.get(int(round(mz)), [])
         else:
@@ -437,7 +465,8 @@ def _process_record(args: tuple) -> tuple[str, list]:
     record, tolerance, electron_mode, hide_empty, show_isotope, \
         best_only, filter_config, save_sdf, record_index, ppm, \
         fragmentation_rules, hr_input, hr_ppm, \
-        confidence, confidence_threshold, intensity_map, strict_structure = args
+        confidence, confidence_threshold, intensity_map, strict_structure, \
+        reference_dict = args
     local_sdf: list = [] if save_sdf else None
     text = format_record(
         record,
@@ -457,6 +486,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
         confidence_threshold=confidence_threshold,
         intensity_map=intensity_map,
         strict_structure=strict_structure,
+        reference_dict=reference_dict,
     )
     return text, local_sdf
 
@@ -745,6 +775,19 @@ examples:
             "a separate SDF contains the matching 2-D geometries."
         ),
     )
+    conf_group.add_argument(
+        "--reference-sdf",
+        type=str,
+        default=None,
+        metavar="FILE",
+        dest="reference_sdf",
+        help=(
+            "Load a reference SDF file containing known mass spectral peaks. "
+            "For compounds matching by name, matched peaks bypass candidate "
+            "enumeration and use the reference exact masses with confidence=0.99. "
+            "Useful for validating against certified reference standards."
+        ),
+    )
 
     return parser
 
@@ -767,6 +810,61 @@ def _any_record_hr(records: list) -> bool:
         if peak_text and detect_hr_peaks(peak_text):
             return True
     return False
+
+
+def _load_reference_sdf(ref_sdf_path: str) -> dict:
+    """
+    Load a reference SDF and build a lookup dict for fast peak matching.
+
+    Returns a dict: {name.lower(): {nominal_mz: exact_mass}}
+
+    The exact_mass is extracted from each peak's nominal m/z value (integer part).
+
+    Parameters
+    ----------
+    ref_sdf_path : str
+        Path to the reference SDF file.
+
+    Returns
+    -------
+    dict
+        Lookup dict mapping lowercased compound names to peak dictionaries.
+    """
+    from .sdf_parser import find_field, parse_peaks_float
+    from .constants import PEAK_FIELD_CANDIDATES
+
+    ref_dict = {}
+    try:
+        ref_records = read_records(ref_sdf_path)
+    except Exception as exc:
+        print("[WARN] Could not load reference SDF '{}': {}".format(
+            ref_sdf_path, exc), file=sys.stderr)
+        return ref_dict
+
+    for record in ref_records:
+        name = (find_field(record.get("fields", {}), ["NAME", "COMPOUND NAME", "COMPOUND_NAME"])
+                or record.get("name") or "").strip()
+        if not name:
+            continue
+
+        peak_text = find_field(record.get("fields", {}), PEAK_FIELD_CANDIDATES)
+        if not peak_text:
+            continue
+
+        # Parse peaks as floats (exact masses if available)
+        peaks = parse_peaks_float(peak_text)
+        if not peaks:
+            continue
+
+        # Build peak dict: {nominal_mz -> exact_mass}
+        peak_dict = {}
+        for exact_mz in peaks:
+            nominal_mz = int(round(exact_mz))
+            peak_dict[nominal_mz] = exact_mz
+
+        ref_dict[name.lower()] = peak_dict
+
+    return ref_dict
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -949,6 +1047,14 @@ def main(argv: list[str] | None = None) -> None:
     else:
         _imaps = [{} for _ in records]
 
+    # ── Optional: load reference SDF for peak matching ──────────────────────
+    reference_dict = {}
+    if args.reference_sdf:
+        reference_dict = _load_reference_sdf(args.reference_sdf)
+        if reference_dict:
+            print("Loaded reference SDF with {} compound(s).\n".format(
+                len(reference_dict)), flush=True)
+
     workers = max(1, args.workers)
     worker_args = [
         (
@@ -969,6 +1075,7 @@ def main(argv: list[str] | None = None) -> None:
             args.confidence_threshold,
             _imaps[idx],
             args.strict_structure,
+            reference_dict,
         )
         for idx, record in enumerate(records)
     ]
