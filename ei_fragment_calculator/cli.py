@@ -62,6 +62,7 @@ def format_record(
     intensity_map: dict = None,
     strict_structure: bool = False,
     reference_dict: dict = None,
+    nist_lookup: bool = False,
 ) -> str:
     """
     Process one SDF record and return the formatted result string.
@@ -88,6 +89,9 @@ def format_record(
     hr_input      : bool        If True, treat peak m/z as exact masses and match
                                 candidates within ±hr_ppm (high-resolution mode).
     hr_ppm        : float       ppm tolerance for HR input mode (default 20).
+    nist_lookup   : bool        If True and INCHIKEY field exists, query NIST WebBook
+                                for annotated EI spectra. Matched peaks use NIST formula
+                                at confidence=0.99, bypassing enumeration.
     """
     # Prefer the <NAME> SDF data field over the MOL-block first line so that
     # records whose MOL block starts with "No Structure" still display the
@@ -187,6 +191,26 @@ def format_record(
     if fragmentation_rules and mol_block:
         mol_data = parse_mol_block_full(mol_block)
 
+    # ── NIST/SDBS spectral library lookup ────────────────────────────────────
+    _nist_annotations = {}  # {nominal_mz: formula_str} if NIST match
+    if nist_lookup:
+        inchikey = original_fields.get("INCHIKEY", "").strip()
+        if inchikey:
+            from .nist_lookup import lookup_nist
+            from .sdbs_lookup import lookup_sdbs
+            nist_result = lookup_nist(inchikey)
+            if nist_result:
+                _nist_annotations = nist_result
+                lines.append("[INFO] NIST match found for '{}': {} annotated peaks".format(
+                    name, len(nist_result)))
+            else:
+                # Fallback to SDBS if NIST miss
+                sdbs_result = lookup_sdbs(name)
+                if sdbs_result:
+                    _nist_annotations = sdbs_result
+                    lines.append("[INFO] SDBS match found for '{}': {} annotated peaks".format(
+                        name, len(sdbs_result)))
+
     # ── Reference SDF lookup: check for exact compound match ──────────────────
     _reference_peaks = {}  # {nominal_mz: exact_mass} if matched
     if reference_dict:
@@ -257,10 +281,38 @@ def format_record(
         else:
             tol = tolerance
 
-        # ── Check for reference match first ──────────────────────────────────
+        # ── Check for NIST/SDBS annotation first ────────────────────────────
+        # NIST annotations take priority over enumeration and reference SDF
         candidates = []
         nominal_mz = int(round(mz))
-        if nominal_mz in _reference_peaks:
+        if nominal_mz in _nist_annotations:
+            nist_formula = _nist_annotations[nominal_mz]
+            # Parse the formula to get composition and compute mass
+            try:
+                comp = parse_formula(nist_formula.strip())
+                nist_neutral = exact_mass(comp)
+                nist_ion = ion_mass(nist_neutral, electron_mode)
+                nist_delta = nist_ion - mz
+                # Create a NIST reference candidate with high confidence
+                nist_candidate = {
+                    "formula": nist_formula,
+                    "neutral_mass": nist_neutral,
+                    "ion_mass": nist_ion,
+                    "delta_mass": nist_delta,
+                    "dbe": calculate_dbe(comp),
+                    "filter_passed": True,
+                    "confidence": 0.99,
+                    "confidence_pct": 99,
+                    "evidence_tags": ["NIST_REF"],
+                    "_composition": comp,
+                }
+                candidates = [nist_candidate]
+            except (ValueError, KeyError):
+                # Invalid formula from NIST (unlikely), fall through to reference check
+                pass
+
+        # ── Check for reference SDF match ────────────────────────────────────
+        if not candidates and nominal_mz in _reference_peaks:
             ref_exact_mass = _reference_peaks[nominal_mz]
             # Create a reference candidate (skip enumeration entirely)
             ref_candidate = {
@@ -466,7 +518,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
         best_only, filter_config, save_sdf, record_index, ppm, \
         fragmentation_rules, hr_input, hr_ppm, \
         confidence, confidence_threshold, intensity_map, strict_structure, \
-        reference_dict = args
+        reference_dict, nist_lookup = args
     local_sdf: list = [] if save_sdf else None
     text = format_record(
         record,
@@ -487,6 +539,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
         intensity_map=intensity_map,
         strict_structure=strict_structure,
         reference_dict=reference_dict,
+        nist_lookup=nist_lookup,
     )
     return text, local_sdf
 
@@ -789,6 +842,23 @@ examples:
         ),
     )
 
+    # ── Spectral library lookup ─────────────────────────────────────────────
+    lib_group = parser.add_argument_group(
+        "spectral library lookup",
+        "Query NIST WebBook and SDBS for annotated EI spectral data.",
+    )
+    lib_group.add_argument(
+        "--nist-lookup",
+        action="store_true",
+        default=False,
+        help=(
+            "Query NIST WebBook by InChIKey (requires INCHIKEY field in records). "
+            "For matched peaks with formula annotations, use NIST formula at confidence=0.99 "
+            "and skip enumeration. Falls back to SDBS if NIST returns no match. "
+            "Requires internet connection; respects NIST rate limits (0.5 sec delay)."
+        ),
+    )
+
     return parser
 
 
@@ -1076,6 +1146,7 @@ def main(argv: list[str] | None = None) -> None:
             _imaps[idx],
             args.strict_structure,
             reference_dict,
+            args.nist_lookup,
         )
         for idx, record in enumerate(records)
     ]
