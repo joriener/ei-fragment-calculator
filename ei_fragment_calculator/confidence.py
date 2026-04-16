@@ -221,7 +221,7 @@ def score_compound(
     base_intensity = max(intensity_map.values(), default=1.0) if intensity_map else 1.0
 
     # Parent nominal ion m/z for complementary-ion check
-    parent_mz = _parent_nominal_mz(parent_composition, electron_mode)
+    parent_nominal_mz = _parent_nominal_mz(parent_composition, electron_mode)
 
     # Deep-copy candidates so we don't mutate the caller's dicts
     scored: dict[int, list[dict]] = {
@@ -236,7 +236,7 @@ def score_compound(
 
             # A — isotope M+1 / M+2
             if enable_isotope and not flat_spectrum and intensity_map:
-                m1, m2, iso_tags = _score_isotope(comp, intensity_map, mz)
+                m1, m2, iso_tags = _score_isotope(comp, intensity_map, mz, parent_nominal_mz)
             else:
                 m1, m2, iso_tags = 0.5, 0.5, []
 
@@ -377,7 +377,7 @@ def score_compound(
         for i, mz_a in enumerate(peak_mzs):
             for mz_b in peak_mzs[:i]:
                 pair_sum = mz_a + mz_b
-                if pair_sum not in (parent_mz - 1, parent_mz, parent_mz + 1):
+                if pair_sum not in (parent_nominal_mz - 1, parent_nominal_mz, parent_nominal_mz + 1):
                     continue
                 top_a = scored[mz_a][0] if scored[mz_a] else None
                 top_b = scored[mz_b][0] if scored[mz_b] else None
@@ -417,6 +417,7 @@ def _score_isotope(
     composition: dict[str, int],
     intensity_map: dict[int, float],
     mz: int,
+    parent_nominal_mz: int = None,
 ) -> tuple[float, float, list[str]]:
     """
     Return (m1_score, m2_score, evidence_tags) for *composition* at *mz*.
@@ -424,9 +425,16 @@ def _score_isotope(
     m1_score and m2_score are both in [0.0, 1.0].
     If M+2 is not informative (predicted < 3%), m2_score is returned as 0.5
     (neutral / does not count against the candidate).
+
+    If parent_nominal_mz is provided and mz < parent_nominal_mz * 0.5,
+    returns neutral scores (fragment too small for isotope analysis).
     """
     mono_int = intensity_map.get(mz, 0.0)
     if mono_int <= 0:
+        return 0.5, 0.5, []
+
+    # M+1 mass-range guard: skip isotope analysis for very small fragments
+    if parent_nominal_mz is not None and mz < parent_nominal_mz * 0.5:
         return 0.5, 0.5, []
 
     # ── M+1 ────────────────────────────────────────────────────────────────

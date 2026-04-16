@@ -378,6 +378,116 @@ def apply_rdkit_validation(composition: dict) -> tuple:
 
 
 # ---------------------------------------------------------------------------
+# 7.  Plausible neutral validation
+# ---------------------------------------------------------------------------
+
+NEUTRAL_VALIDATION_REF = (
+    "Neutral loss must have non-negative element counts: parent - fragment >= 0 for all elements."
+)
+
+
+def apply_neutral_validation(
+    fragment_comp: dict,
+    parent_comp: dict,
+) -> tuple:
+    """
+    Validate that the neutral loss (parent - fragment) is chemically plausible.
+
+    Rejects candidates where parent_comp[el] < fragment_comp[el] for any element,
+    or where the resulting neutral species would have negative H count.
+
+    Returns (passed: bool, message: str).
+    """
+    # Compute neutral loss composition
+    neutral = {}
+    for el in parent_comp:
+        parent_count = parent_comp.get(el, 0)
+        fragment_count = fragment_comp.get(el, 0)
+        neutral_count = parent_count - fragment_count
+        if neutral_count < 0:
+            return False, (
+                "Invalid neutral loss: parent has fewer {} atoms ({}) than fragment ({}). "
+                "Plausible neutral validation failed.".format(el, parent_count, fragment_count)
+            )
+        if neutral_count > 0:
+            neutral[el] = neutral_count
+
+    # Check H specifically
+    if neutral.get("H", 0) < 0:
+        return False, (
+            "Invalid neutral loss: negative H count in neutral species. "
+            "Plausible neutral validation failed."
+        )
+
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# 8.  Cl/Br M+2 pattern hard constraint
+# ---------------------------------------------------------------------------
+
+CLBR_M2_REF = (
+    "Isotope pattern constraints for Cl and Br: "
+    "each Cl adds ~0.325 to M+2/M ratio, each Br adds ~0.970."
+)
+
+
+def apply_clbr_m2_check(
+    composition: dict,
+    intensity_map: Optional[dict],
+    nominal_mz: int,
+) -> tuple:
+    """
+    For Cl/Br-containing compositions, validate the M+2/M intensity ratio.
+
+    Predicted ratios per atom:
+    - 1 Cl → 0.325
+    - 2 Cl → 0.650 (additive)
+    - 1 Br → 0.970
+    - Combinations are additive
+
+    Rejects candidates where |predicted - observed| / predicted > 0.35.
+    Skips if intensity_map is None or missing M and M+2 peaks.
+
+    Returns (passed: bool, message: str).
+    """
+    if not intensity_map:
+        return True, "no intensity map — M+2 check skipped"
+
+    n_cl = composition.get("Cl", 0)
+    n_br = composition.get("Br", 0)
+
+    if n_cl == 0 and n_br == 0:
+        return True, ""  # no Cl/Br, no check needed
+
+    # Predicted M+2/M ratio
+    predicted = n_cl * 0.325 + n_br * 0.970
+
+    # Observed ratio
+    mono_int = intensity_map.get(nominal_mz, 0.0)
+    m2_int   = intensity_map.get(nominal_mz + 2, 0.0)
+
+    if mono_int <= 0 or m2_int < 0:
+        return True, "incomplete M/M+2 peaks — M+2 check skipped"
+
+    observed = m2_int / mono_int
+
+    # Tolerance: 35% relative error
+    rel_error = abs(predicted - observed) / predicted if predicted > 0 else float('inf')
+    tolerance = 0.35
+
+    if rel_error <= tolerance:
+        return True, ""
+
+    return False, (
+        "Cl/Br M+2 ratio mismatch: predicted={:.3f}, observed={:.3f}, "
+        "rel.err={:.1%} > {:.0%} tol (Cl={}, Br={}). Ref: Isotope patterns".format(
+            predicted, observed, rel_error, tolerance, n_cl, n_br
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # Combined filter runner
 # ---------------------------------------------------------------------------
 
@@ -387,6 +497,8 @@ def run_all_filters(
     config: FilterConfig,
     observed_spectrum: Optional[dict] = None,
     parent_ring_count: Optional[int] = None,
+    intensity_map: Optional[dict] = None,
+    parent_composition: Optional[dict] = None,
 ) -> dict:
     """
     Apply all enabled filters to a candidate formula and attach results.
@@ -440,6 +552,20 @@ def run_all_filters(
     if config.rdkit_validation:
         passed, msg = apply_rdkit_validation(composition)
         details["rdkit_validation"] = msg if msg else "OK"
+        if not passed:
+            all_passed = False
+
+    # Plausible neutral validation (always enabled when parent_composition is provided)
+    if parent_composition:
+        passed, msg = apply_neutral_validation(composition, parent_composition)
+        details["neutral_validation"] = msg if msg else "OK"
+        if not passed:
+            all_passed = False
+
+    # Cl/Br M+2 hard constraint (always enabled when intensity_map is provided)
+    if intensity_map:
+        passed, msg = apply_clbr_m2_check(composition, intensity_map, nominal_mz)
+        details["clbr_m2_check"] = msg if msg else "OK"
         if not passed:
             all_passed = False
 

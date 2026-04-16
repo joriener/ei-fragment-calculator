@@ -308,6 +308,8 @@ def find_fragment_candidates(
             run_all_filters(
                 c, nominal_mz, filter_config,
                 observed_spectrum, parent_ring_count,
+                intensity_map=None,
+                parent_composition=parent_composition,
             )
             for c in candidates
         ]

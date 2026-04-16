@@ -87,6 +87,49 @@ NEUTRAL_LOSSES: dict[str, tuple[float, dict, str]] = {
 # Heteroatoms that direct alpha-cleavage
 _ALPHA_HETEROATOMS = {"N", "O", "S", "F", "Cl", "Br", "I", "P"}
 
+# Standard valence for implicit H calculation
+_IMPLICIT_VALENCE = {
+    "C": 4, "N": 3, "O": 2, "S": 2, "P": 5,
+    "F": 1, "Cl": 1, "Br": 1, "I": 1, "Si": 4,
+}
+
+
+def _add_implicit_h(comp: dict, atoms: list, bonds: list,
+                    frag_indices: frozenset) -> dict:
+    """
+    Adjust a fragment composition to include implicit hydrogens.
+
+    For each atom in the fragment, compute valence used by bonds within
+    the fragment, then add implicit H to satisfy standard valence.
+
+    Parameters
+    ----------
+    comp : dict  Current composition (may or may not have H already).
+    atoms : list  Atom list from mol_data.
+    bonds : list  Bond list from mol_data.
+    frag_indices : frozenset  Indices of atoms in this fragment.
+
+    Returns
+    -------
+    dict  Updated composition with implicit H added.
+    """
+    h_count = 0
+    for idx in frag_indices:
+        el = atoms[idx]["element"]
+        valence = _IMPLICIT_VALENCE.get(el, 0)
+        if valence == 0:
+            continue  # Unknown element, skip
+        # Sum bond orders for bonds within the fragment
+        used_valence = sum(b["type"] for b in bonds
+                           if (b["a1"] == idx and b["a2"] in frag_indices) or
+                              (b["a2"] == idx and b["a1"] in frag_indices))
+        h_count += max(0, valence - used_valence)
+
+    result = dict(comp)
+    if h_count:
+        result["H"] = result.get("H", 0) + h_count
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Tier 1 helpers
@@ -288,6 +331,10 @@ def enumerate_homolytic_cleavages(mol_data: dict) -> list[dict]:
         frag1_comp = _atoms_to_composition(atoms, frag1_atoms)
         frag2_comp = _atoms_to_composition(atoms, frag2_atoms)
 
+        # Add implicit H to each fragment
+        frag1_comp = _add_implicit_h(frag1_comp, atoms, bonds, frag1_atoms)
+        frag2_comp = _add_implicit_h(frag2_comp, atoms, bonds, frag2_atoms)
+
         results.append({
             "rule":          "homolytic_cleavage",
             "bond":          (a1, a2),
@@ -369,6 +416,10 @@ def apply_alpha_cleavage(mol_data: dict) -> list[dict]:
                 comp_h = _atoms_to_composition(atoms, frag_h)
                 comp_n = _atoms_to_composition(atoms, frag_n)
 
+                # Add implicit H to each fragment
+                comp_h = _add_implicit_h(comp_h, atoms, bonds, frag_h)
+                comp_n = _add_implicit_h(comp_n, atoms, bonds, frag_n)
+
                 results.append({
                     "rule":                   "alpha_cleavage",
                     "heteroatom_idx":         h_idx,
@@ -436,6 +487,10 @@ def apply_inductive_cleavage(mol_data: dict) -> list[dict]:
 
                     comp_h = _atoms_to_composition(atoms, frag_h)
                     comp_n = _atoms_to_composition(atoms, frag_n)
+
+                    # Add implicit H to each fragment
+                    comp_h = _add_implicit_h(comp_h, atoms, bonds, frag_h)
+                    comp_n = _add_implicit_h(comp_n, atoms, bonds, frag_n)
 
                     results.append({
                         "rule":                 "inductive_cleavage",
@@ -550,9 +605,14 @@ def apply_mclafferty(mol_data: dict) -> list[dict]:
                         adjacency, c_idx, exclude_edge=(alpha_idx, beta_idx))
                     neutral_atoms = frozenset(range(len(atoms))) - enol_atoms
 
-                    # One H migrates from γ to O → adjust H counts
-                    enol_comp  = dict(_atoms_to_composition(atoms, enol_atoms))
-                    neut_comp  = dict(_atoms_to_composition(atoms, neutral_atoms))
+                    # Add implicit H, then adjust for H migration
+                    enol_comp  = _add_implicit_h(
+                        _atoms_to_composition(atoms, enol_atoms),
+                        atoms, bonds, enol_atoms)
+                    neut_comp  = _add_implicit_h(
+                        _atoms_to_composition(atoms, neutral_atoms),
+                        atoms, bonds, neutral_atoms)
+                    # One H migrates from γ to O
                     enol_comp["H"]  = enol_comp.get("H", 0) + 1
                     neut_comp["H"]  = max(0, neut_comp.get("H", 0) - 1)
 
@@ -581,6 +641,7 @@ def annotate_candidate(
     candidate: dict,
     neutral_loss_matches: list[dict],
     structure_frags: Optional[list[dict]] = None,
+    strict_structure: bool = False,
 ) -> dict:
     """
     Attach fragmentation-rule information to a candidate dict.
@@ -598,6 +659,8 @@ def annotate_candidate(
     neutral_loss_matches : list   Output of :func:`annotate_neutral_losses`.
     structure_frags      : list   Combined output of structure-based rule functions
                                   (optional; None if no MOL block available).
+    strict_structure     : bool   If True and structure_frags is provided but no match
+                                  found, set filter_passed = False. (default: False)
 
     Returns
     -------
@@ -640,6 +703,9 @@ def annotate_candidate(
     candidate["fragmentation_rule"] = best_rule
     candidate["rule_description"]   = best_desc
     candidate["rule_score"]         = 0.0 if best_rule else 1.0
+    # Hard gate: if strict_structure is on, structure_frags is available, and no match, mark as failed
+    if strict_structure and structure_frags and not best_rule:
+        candidate["filter_passed"] = False
     return candidate
 
 

@@ -109,7 +109,7 @@ for rec in records:
                                          tolerance=TOL_DA)
         if cands:
             # run_all_filters preserves _mdd_deviation and adds filter_passed
-            annotated = [run_all_filters(c, nom_mz, cfg) for c in cands]
+            annotated = [run_all_filters(c, nom_mz, cfg, parent_composition=parent) for c in cands]
             passed    = [c for c in annotated if c.get('filter_passed', True)]
             ranked    = rank_candidates(passed) if passed else rank_candidates(annotated)
             best      = ranked[0]

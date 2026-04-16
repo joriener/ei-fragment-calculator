@@ -60,6 +60,7 @@ def format_record(
     confidence: bool = False,
     confidence_threshold: float = 0.0,
     intensity_map: dict = None,
+    strict_structure: bool = False,
 ) -> str:
     """
     Process one SDF record and return the formatted result string.
@@ -189,8 +190,18 @@ def format_record(
     _use_confidence = confidence and not hr_input
     _all_candidates_by_mz: dict = {}   # {mz: [candidate, ...]}
 
+    # Intensity pre-filter: compute base intensity and filter weak peaks
+    base_intensity = max(intensity_map.values()) if intensity_map else 1.0
+    filtered_mzs = []
+    for mz in iter_mzs:
+        if intensity_map and base_intensity > 0:
+            rel_intensity = intensity_map.get(mz, 0) / base_intensity
+            if rel_intensity < 0.02:
+                continue  # skip peaks < 2% of base intensity
+        filtered_mzs.append(mz)
+
     if _use_confidence:
-        for mz in iter_mzs:
+        for mz in filtered_mzs:
             if hr_input:
                 tol = mz * hr_ppm / 1_000_000
             elif ppm is not None:
@@ -208,7 +219,7 @@ def format_record(
                 )
                 nl_m = annotate_neutral_losses(mz, parent_neutral, parent, electron_mode, tol)
                 sf   = get_structure_fragments(mol_data) if mol_data else []
-                cands = [annotate_candidate(c, nl_m, sf) for c in cands]
+                cands = [annotate_candidate(c, nl_m, sf, strict_structure=strict_structure) for c in cands]
             _all_candidates_by_mz[int(round(mz))] = cands
 
         # Scoring phase
@@ -227,7 +238,7 @@ def format_record(
             n_passes=3,
         )
 
-    for mz in iter_mzs:
+    for mz in filtered_mzs:
         # Per-peak tolerance: HR ppm-based, global ppm-based, or fixed Da
         if hr_input:
             tol = mz * hr_ppm / 1_000_000
@@ -252,7 +263,7 @@ def format_record(
                 )
                 nl_matches   = annotate_neutral_losses(mz, parent_neutral, parent, electron_mode, tol)
                 struct_frags = get_structure_fragments(mol_data) if mol_data else []
-                candidates   = [annotate_candidate(c, nl_matches, struct_frags) for c in candidates]
+                candidates   = [annotate_candidate(c, nl_matches, struct_frags, strict_structure=strict_structure) for c in candidates]
 
         # --- best-only mode: keep only the top-ranked candidate ---
         if best_only:
@@ -426,7 +437,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
     record, tolerance, electron_mode, hide_empty, show_isotope, \
         best_only, filter_config, save_sdf, record_index, ppm, \
         fragmentation_rules, hr_input, hr_ppm, \
-        confidence, confidence_threshold, intensity_map = args
+        confidence, confidence_threshold, intensity_map, strict_structure = args
     local_sdf: list = [] if save_sdf else None
     text = format_record(
         record,
@@ -445,6 +456,7 @@ def _process_record(args: tuple) -> tuple[str, list]:
         confidence=confidence,
         confidence_threshold=confidence_threshold,
         intensity_map=intensity_map,
+        strict_structure=strict_structure,
     )
     return text, local_sdf
 
@@ -621,6 +633,16 @@ examples:
             "losses (H2O, CO, HCl, …) and structure-based cleavages (α-cleavage, "
             "McLafferty, i-cleavage) when a 2-D MOL block is present. "
             "Matching candidates are labelled with the rule name in the output."
+        ),
+    )
+    parser.add_argument(
+        "--strict-structure",
+        action="store_true",
+        default=False,
+        help=(
+            "When --fragmentation-rules is enabled and a 2-D MOL block is present, "
+            "reject candidates that do not match any structure-derived fragment "
+            "(hard gate). Default: off (candidates are annotated but not filtered)."
         ),
     )
     parser.add_argument(
@@ -946,6 +968,7 @@ def main(argv: list[str] | None = None) -> None:
             use_confidence,
             args.confidence_threshold,
             _imaps[idx],
+            args.strict_structure,
         )
         for idx, record in enumerate(records)
     ]
