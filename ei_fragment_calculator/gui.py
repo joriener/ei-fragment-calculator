@@ -163,6 +163,10 @@ class _Settings:
     def __setitem__(self, key, val):
         self._data[key] = val
 
+    def get(self, key, default=None):
+        """Get setting value with optional default."""
+        return self._data.get(key, _FACTORY.get(key, default))
+
 
 # ===========================================================================
 # Thread-safe stdout redirector
