@@ -1638,8 +1638,11 @@ class _SDFViewerTab(ttk.Frame):
                     compound_id INTEGER PRIMARY KEY,
                     mol_reference TEXT,
                     FOREIGN KEY(compound_id) REFERENCES compounds(id)
-                );
+                )
+            """)
 
+            # Table 5: retention_indices
+            self._db_cursor.execute("""
                 CREATE TABLE IF NOT EXISTS retention_indices (
                     id INTEGER PRIMARY KEY,
                     compound_id INTEGER,
@@ -1649,8 +1652,11 @@ class _SDFViewerTab(ttk.Frame):
                     data_points INTEGER,
                     FOREIGN KEY(compound_id) REFERENCES compounds(id),
                     UNIQUE(compound_id, gc_column)
-                );
+                )
+            """)
 
+            # Table 6: retention_times
+            self._db_cursor.execute("""
                 CREATE TABLE IF NOT EXISTS retention_times (
                     id INTEGER PRIMARY KEY,
                     compound_id INTEGER,
@@ -1660,13 +1666,14 @@ class _SDFViewerTab(ttk.Frame):
                     temperature_program TEXT,
                     FOREIGN KEY(compound_id) REFERENCES compounds(id),
                     UNIQUE(compound_id, gc_method, gc_column)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_ri_compound ON retention_indices(compound_id);
-                CREATE INDEX IF NOT EXISTS idx_ri_value ON retention_indices(ri_value);
-                CREATE INDEX IF NOT EXISTS idx_rt_compound ON retention_times(compound_id);
-                CREATE INDEX IF NOT EXISTS idx_rt_value ON retention_times(rt_value)
+                )
             """)
+
+            # Create indexes
+            self._db_cursor.execute("CREATE INDEX IF NOT EXISTS idx_ri_compound ON retention_indices(compound_id)")
+            self._db_cursor.execute("CREATE INDEX IF NOT EXISTS idx_ri_value ON retention_indices(ri_value)")
+            self._db_cursor.execute("CREATE INDEX IF NOT EXISTS idx_rt_compound ON retention_times(compound_id)")
+            self._db_cursor.execute("CREATE INDEX IF NOT EXISTS idx_rt_value ON retention_times(rt_value)")
 
             self._db_conn.commit()
             print("[DEBUG] Database initialized with schema")
