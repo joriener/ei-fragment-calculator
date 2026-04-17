@@ -2502,8 +2502,10 @@ class _SDFViewerTab(ttk.Frame):
         vsb.config(command=meta_tree.yview)
         hsb.config(command=meta_tree.xview)
 
-        meta_tree.column("#0", width=150, heading="Field Name")
-        meta_tree.column("Value", width=320, heading="Value")
+        meta_tree.column("#0", width=150)
+        meta_tree.heading("#0", text="Field Name")
+        meta_tree.column("Value", width=320)
+        meta_tree.heading("Value", text="Value")
 
         # Populate tree with metadata
         item_map = {}  # Map tree item ID to field name
@@ -2702,10 +2704,14 @@ class _SDFViewerTab(ttk.Frame):
         vsb.config(command=peaks_tree.yview)
         hsb.config(command=peaks_tree.xview)
 
-        peaks_tree.column("#0", width=50, heading="Index")
-        peaks_tree.column("mz", width=150, heading="m/z")
-        peaks_tree.column("intensity", width=150, heading="Intensity")
-        peaks_tree.column("base", width=100, heading="Base Peak")
+        peaks_tree.column("#0", width=50)
+        peaks_tree.heading("#0", text="Index")
+        peaks_tree.column("mz", width=150)
+        peaks_tree.heading("mz", text="m/z")
+        peaks_tree.column("intensity", width=150)
+        peaks_tree.heading("intensity", text="Intensity")
+        peaks_tree.column("base", width=100)
+        peaks_tree.heading("base", text="Base Peak")
 
         # Populate tree with peaks
         item_map = {}  # Map tree item ID to peak index
