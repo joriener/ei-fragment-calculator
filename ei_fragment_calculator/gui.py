@@ -752,7 +752,6 @@ class _CalcTab(ttk.Frame):
                     pairs = parse_peaks_with_intensity(peak_text)
                     if pairs:
                         mz_vals, intensities = zip(*pairs)
-                        self._cleanup_spectrum()
                         self._render_spectrum(list(mz_vals), list(intensities))
                     else:
                         self._clear_spectrum()
