@@ -1048,11 +1048,353 @@ class _ElementTab(ttk.Frame):
 
 
 # ===========================================================================
-class _SDFViewerTab(ttk.Frame):
+# SDF Enricher Tab
+# ===========================================================================
+
+class _EnrichTab(ttk.Frame):
 
     def __init__(self, master: tk.Widget, settings: _Settings):
         super().__init__(master, padding=10)
         self._settings = settings
+        self._running  = False
+        self._stop_event = threading.Event()
+        self._out_path = tk.StringVar(value="")
+        self._build()
+        self._load_settings()
+
+    def _build(self) -> None:
+        io = ttk.LabelFrame(self, text=" Files ", padding=8)
+        io.pack(fill=tk.X, pady=(0, 6))
+        io.columnconfigure(1, weight=1)
+
+        ttk.Label(io, text="Input SDF:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self._in_var = tk.StringVar()
+        self._in_var.trace_add("write", self._update_out)
+        ttk.Entry(io, textvariable=self._in_var).grid(
+            row=0, column=1, sticky=tk.EW, padx=(6, 4))
+        ttk.Button(io, text="Browse…", command=self._browse_in
+                   ).grid(row=0, column=2)
+
+        ttk.Label(io, text="Output SDF:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        ttk.Entry(io, textvariable=self._out_path).grid(
+            row=1, column=1, sticky=tk.EW, padx=(6, 4))
+        ttk.Button(io, text="Browse…", command=self._browse_out
+                   ).grid(row=1, column=2)
+
+        # Sources
+        src = ttk.LabelFrame(self, text=" Data Sources  (all ON by default) ",
+                             padding=8)
+        src.pack(fill=tk.X, pady=(0, 6))
+
+        rA = ttk.Frame(src); rA.pack(fill=tk.X, pady=(0, 4))
+        self._no_pc  = tk.BooleanVar()
+        self._no_ch  = tk.BooleanVar()
+        self._no_kg  = tk.BooleanVar()
+        self._no_hm  = tk.BooleanVar()
+        self._no_em  = tk.BooleanVar()
+        self._no_sp  = tk.BooleanVar()
+        for var, lbl, tip in [
+            (self._no_pc, "Skip PubChem",    "Formula, SMILES, InChI, CASNO, synonyms, CID"),
+            (self._no_ch, "Skip ChEBI",      "ChEBI accession (by InChIKey)"),
+            (self._no_kg, "Skip KEGG",       "KEGG C-number (by CAS or name)"),
+            (self._no_hm, "Skip HMDB",       "HMDB accession (by InChIKey)"),
+            (self._no_em, "Skip Exact Mass", "Calculate from FORMULA locally"),
+            (self._no_sp, "Skip SPLASH",     "Spectral hash (requires splashpy)"),
+        ]:
+            cb = ttk.Checkbutton(rA, text=lbl, variable=var)
+            cb.pack(side=tk.LEFT, padx=(0, 14))
+            _tooltip(cb, tip)
+
+        rB = ttk.Frame(src); rB.pack(fill=tk.X)
+        self._fetch_mol = tk.BooleanVar()
+        cb_mol = ttk.Checkbutton(rB, text="Fetch 2-D structures (PubChem)",
+                                  variable=self._fetch_mol)
+        cb_mol.pack(side=tk.LEFT, padx=(0, 14))
+        _tooltip(cb_mol, "Download MOL block from PubChem for records without a 2-D structure")
+        self._overwr = tk.BooleanVar()
+        ttk.Checkbutton(rB, text="Overwrite existing values", variable=self._overwr
+                        ).pack(side=tk.LEFT, padx=(0, 24))
+        ttk.Label(rB, text="API delay (s):").pack(side=tk.LEFT)
+        self._delay = tk.StringVar()
+        _spin(rB, self._delay, 0.0, 5.0, 0.1).pack(side=tk.LEFT, padx=4)
+
+        def_fr = ttk.Frame(self); def_fr.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(def_fr, text="\U0001f4be  Save as Default",
+                   command=self._save_defaults).pack(side=tk.LEFT, padx=(0, 6))
+
+        _sep(self)
+
+        run_fr = ttk.Frame(self); run_fr.pack(fill=tk.X, pady=(0, 4))
+        self._run_btn = ttk.Button(run_fr, text="\u25b6  Enrich",
+                                   style="Accent.TButton", command=self._run)
+        self._run_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self._stop_btn = ttk.Button(run_fr, text="\u23f9  Stop",
+                                    state="disabled", command=self._stop)
+        self._stop_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(run_fr, text="Clear",
+                   command=lambda: _clear_log(self._log)).pack(side=tk.LEFT, padx=(0, 6))
+        self._open_btn = ttk.Button(run_fr, text="\U0001f4c2  Open output folder",
+                                    state="disabled", command=self._open_folder)
+        self._open_btn.pack(side=tk.LEFT)
+        self._status = tk.StringVar(value="Ready.")
+        ttk.Label(run_fr, textvariable=self._status, foreground="#666666"
+                  ).pack(side=tk.RIGHT)
+
+        self._pb = ttk.Progressbar(self, mode="indeterminate",
+                                   style="Horizontal.TProgressbar")
+        self._pb.pack(fill=tk.X, pady=(0, 4))
+
+        log_fr = ttk.LabelFrame(self, text=" Output ", padding=4)
+        log_fr.pack(fill=tk.BOTH, expand=True)
+        self._log = _make_log(log_fr)
+        self._log.pack(fill=tk.BOTH, expand=True)
+
+    def _load_settings(self) -> None:
+        s = self._settings
+        self._no_pc.set(s["e_no_pubchem"])
+        self._no_ch.set(s["e_no_chebi"])
+        self._no_kg.set(s["e_no_kegg"])
+        self._no_hm.set(s["e_no_hmdb"])
+        self._no_em.set(s["e_no_exact_mass"])
+        self._no_sp.set(s["e_no_splash"])
+        self._overwr.set(s["e_overwrite"])
+        self._delay.set(str(s["e_delay"]))
+        self._fetch_mol.set(s["e_fetch_mol"])
+
+    def _save_defaults(self) -> None:
+        s = self._settings
+        s["e_no_pubchem"]    = self._no_pc.get()
+        s["e_no_chebi"]      = self._no_ch.get()
+        s["e_no_kegg"]       = self._no_kg.get()
+        s["e_no_hmdb"]       = self._no_hm.get()
+        s["e_no_exact_mass"] = self._no_em.get()
+        s["e_no_splash"]     = self._no_sp.get()
+        s["e_overwrite"]     = self._overwr.get()
+        s["e_delay"]         = float(self._delay.get())
+        s["e_fetch_mol"]     = self._fetch_mol.get()
+        s.save()
+        self._status.set("Defaults saved.")
+
+    def _browse_in(self) -> None:
+        init = self._settings["last_input_dir"] or str(Path.home())
+        path = filedialog.askopenfilename(
+            initialdir=init,
+            title="Select SDF file to enrich",
+            filetypes=[("SDF files", "*.sdf *.SDF"), ("All files", "*.*")],
+        )
+        if path:
+            self._in_var.set(path)
+            self._settings["last_input_dir"] = str(Path(path).parent)
+
+    def _browse_out(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="Save enriched SDF as\u2026",
+            defaultextension=".sdf",
+            filetypes=[("SDF files", "*.sdf"), ("All files", "*.*")],
+        )
+        if path:
+            self._out_path.set(path)
+
+    def _update_out(self, *_) -> None:
+        p = self._in_var.get().strip()
+        if p:
+            try:
+                from sdf_enricher.sdf_io import enriched_path
+                self._out_path.set(enriched_path(p))
+            except ImportError:
+                pass
+
+    @staticmethod
+    def _find_field_key(fields: dict, candidates: list) -> str | None:
+        """Find actual dict key matching a candidate (case-insensitive)."""
+        upper_map = {k.upper(): k for k in fields}
+        for candidate in candidates:
+            if candidate.upper() in upper_map:
+                return upper_map[candidate.upper()]
+        return None
+
+    def _format_cas_numbers(self, records: list) -> None:
+        """Format CAS numbers and extract compound names from <NAME> field."""
+        name_candidates = ["NAME", "COMPOUND NAME", "COMPOUND_NAME"]
+        cas_candidates = ["CASNO", "CAS NO", "CAS_NO", "CAS NUMBER"]
+        formatted_count = 0
+        name_count = 0
+
+        for record in records:
+            fields = record.get("fields", {})
+            mol_block = record.get("mol_block", "")
+
+            name_key = self._find_field_key(fields, name_candidates)
+            if name_key:
+                real_name = fields[name_key].strip()
+                if real_name and real_name != "No Structure":
+                    record["compound_name"] = real_name
+                    record["name"] = real_name
+                    if mol_block:
+                        newline_idx = mol_block.find("\n")
+                        if newline_idx >= 0:
+                            record["mol_block"] = real_name[:80] + mol_block[newline_idx:]
+                    name_count += 1
+
+            cas_key = self._find_field_key(fields, cas_candidates)
+            if cas_key:
+                cas_val = fields[cas_key].strip()
+                formatted = self._format_single_cas(cas_val)
+                if formatted != cas_val:
+                    fields["CAS"] = formatted
+                    formatted_count += 1
+
+        if name_count > 0:
+            print(f"  Updated {name_count} MOL block header(s) with real compound name(s).")
+        if formatted_count > 0:
+            print(f"  Added {formatted_count} formatted <CAS> field(s).")
+
+    def _format_single_cas(self, cas_str: str) -> str:
+        """Format a single CAS number string."""
+        cas_str = cas_str.strip()
+        if "-" in cas_str:
+            return cas_str
+        digits = re.sub(r"\D", "", cas_str)
+        if len(digits) < 5:
+            return cas_str
+        main = digits[:-3]
+        part2 = digits[-3:-1]
+        part3 = digits[-1]
+        return f"{main}-{part2}-{part3}"
+
+    def _open_folder(self) -> None:
+        p = self._out_path.get()
+        if p:
+            try:
+                os.startfile(str(Path(p).parent))
+            except AttributeError:
+                subprocess.Popen(["xdg-open", str(Path(p).parent)])
+
+    def _run(self) -> None:
+        if self._running:
+            return
+        sdf = self._in_var.get().strip()
+        if not sdf:
+            messagebox.showwarning("No file", "Select an input SDF file first.")
+            return
+        try:
+            delay = float(self._delay.get())
+        except ValueError:
+            messagebox.showerror("Invalid value", "Delay must be a number.")
+            return
+        cfg = dict(
+            pubchem         = not self._no_pc.get(),
+            chebi           = not self._no_ch.get(),
+            kegg            = not self._no_kg.get(),
+            hmdb            = not self._no_hm.get(),
+            calc_exact_mass = not self._no_em.get(),
+            calc_splash     = not self._no_sp.get(),
+            overwrite       = self._overwr.get(),
+            delay           = delay,
+        )
+        out = self._out_path.get().strip() or None
+
+        self._stop_event.clear()
+        self._run_btn.configure(state="disabled")
+        self._stop_btn.configure(state="normal")
+        self._open_btn.configure(state="disabled")
+        self._status.set("Enriching\u2026")
+        self._pb.start(12)
+        self._running = True
+        _clear_log(self._log)
+
+        rd = _Redirector(self._log, self.winfo_toplevel())
+        fetch_mol = self._fetch_mol.get() and not self._no_pc.get()
+        threading.Thread(target=self._worker, args=(sdf, cfg, out, rd, fetch_mol),
+                         daemon=True).start()
+
+    def _stop(self) -> None:
+        """Signal the worker thread to stop."""
+        self._stop_event.set()
+        self._stop_btn.configure(state="disabled")
+        self._status.set("Stopping\u2026")
+
+    def _worker(self, sdf_path: str, cfg: dict, out_path: str | None,
+                rd: _Redirector, fetch_mol: bool = True) -> None:
+        from sdf_enricher.sdf_io   import read_sdf, write_sdf, enriched_path
+        from sdf_enricher.enricher import EnrichConfig, enrich_records
+        old_o, old_e = sys.stdout, sys.stderr
+        sys.stdout = rd
+        sys.stderr = rd
+        ok = True
+        final_out = out_path
+        try:
+            records = read_sdf(sdf_path)
+            print(f"SDF Enricher\n  Input   : {sdf_path}\n  Records : {len(records)}\n")
+
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
+            self._format_cas_numbers(records)
+
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
+            print("\nEnriching with public chemical databases…")
+            print("(This step cannot be stopped once it starts)")
+            enrich_records(records, config=EnrichConfig(**cfg), verbose=True)
+
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
+            if fetch_mol:
+                from .structure_fetcher import enrich_mol_blocks, _mol_block_has_atoms
+                records_missing_mol = [r for r in records if not _mol_block_has_atoms(r.get("mol_block", ""))]
+                if records_missing_mol:
+                    print(f"\nFetching 2-D structures from PubChem ({len(records_missing_mol)} record(s) without structure)…")
+                    def _prog(done, total, name):
+                        if self._stop_event.is_set():
+                            raise KeyboardInterrupt("Enrichment cancelled by user.")
+                        print(f"  [{done}/{total}] {name or '(unnamed)'}")
+                    enrich_mol_blocks(records, progress_callback=_prog)
+                else:
+                    print("\nAll records already have 2-D structures — skipping PubChem fetch.")
+
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
+            final_out = out_path or enriched_path(sdf_path)
+            n = write_sdf(records, final_out)
+            print(f"\nSaved {n} record(s) to '{final_out}'.")
+        except KeyboardInterrupt:
+            sys.stderr.write("\nEnrichment stopped by user.\n")
+            ok = False
+        except Exception as exc:
+            sys.stderr.write(f"\nERROR: {exc}\n")
+            ok = False
+        finally:
+            sys.stdout = old_o
+            sys.stderr = old_e
+        self.winfo_toplevel().after(0, self._done, ok, final_out or "")
+
+    def _done(self, ok: bool, out_path: str) -> None:
+        self._running = False
+        self._pb.stop()
+        self._run_btn.configure(state="normal")
+        self._stop_btn.configure(state="disabled")
+        self._status.set("Done." if ok else "Finished with errors.")
+        if out_path and Path(out_path).exists():
+            self._out_path.set(out_path)
+            self._open_btn.configure(state="normal")
+
+
+# ===========================================================================
+# SDF Viewer Tab
+# ===========================================================================
+
+class _SDFViewerTab(ttk.Frame):
+
+    def __init__(self, master: tk.Widget):
+        super().__init__(master, padding=10)
         self._records = []
         self._current_idx = 0
         self._sdf_path = tk.StringVar()  # Legacy - kept for backward compat
@@ -1113,37 +1455,6 @@ class _SDFViewerTab(ttk.Frame):
 
         except Exception as e:
             print(f"Error building file selection: {e}")
-
-        # ── Data Enrichment (Collapsible) ──────────────────────────────────
-        try:
-            self._enrich_collapsed = True
-            self._enrich_frame_inner = None
-
-            enrich_fr = ttk.LabelFrame(self, text=" Data Enrichment (Optional) ", padding=8)
-            enrich_fr.pack(fill=tk.X, pady=(0, 6))
-            enrich_fr.columnconfigure(0, weight=1)
-
-            # Toggle button
-            toggle_fr = ttk.Frame(enrich_fr)
-            toggle_fr.pack(fill=tk.X, pady=(0, 4))
-
-            self._enrich_toggle_btn = ttk.Button(toggle_fr, text="▶ Show",
-                                                 command=self._toggle_enricher_section)
-            self._enrich_toggle_btn.pack(side=tk.LEFT, padx=(0, 8))
-
-            ttk.Label(toggle_fr, text="Add PubChem, ChEBI, KEGG, HMDB, ExactMass, SPLASH data",
-                     foreground="#666666").pack(side=tk.LEFT)
-
-            # Inner frame (initially hidden)
-            self._enrich_frame_outer = enrich_fr
-            self._enrich_frame_inner = ttk.Frame(enrich_fr)
-            self._enrich_frame_inner.pack(fill=tk.X, pady=(4, 0))
-            self._enrich_frame_inner.pack_forget()  # Hidden by default
-
-            self._setup_enricher_section()
-
-        except Exception as e:
-            print(f"Error building enrichment section: {e}")
 
         # ── Main Content Area ──────────────────────────────────────────────
         try:
@@ -1432,126 +1743,6 @@ class _SDFViewerTab(ttk.Frame):
             import traceback
             traceback.print_exc()
             messagebox.showerror("Error", f"Failed to load JDX file:\n{str(e)[:300]}")
-
-    def _toggle_enricher_section(self) -> None:
-        """Toggle enrichment section visibility."""
-        if self._enrich_collapsed:
-            self._enrich_frame_inner.pack(fill=tk.X, pady=(4, 0))
-            self._enrich_toggle_btn.config(text="▼ Hide")
-            self._enrich_collapsed = False
-        else:
-            self._enrich_frame_inner.pack_forget()
-            self._enrich_toggle_btn.config(text="▶ Show")
-            self._enrich_collapsed = True
-
-    def _setup_enricher_section(self) -> None:
-        """Setup enrichment controls in the collapsible section."""
-        if not self._enrich_frame_inner:
-            return
-
-        # Data sources
-        src_fr = ttk.Frame(self._enrich_frame_inner)
-        src_fr.pack(fill=tk.X, pady=(0, 4))
-
-        self._enrich_no_pc = tk.BooleanVar()
-        self._enrich_no_ch = tk.BooleanVar()
-        self._enrich_no_kg = tk.BooleanVar()
-        self._enrich_no_hm = tk.BooleanVar()
-        self._enrich_no_em = tk.BooleanVar()
-        self._enrich_no_sp = tk.BooleanVar()
-
-        sources = [
-            (self._enrich_no_pc, "Skip PubChem"),
-            (self._enrich_no_ch, "Skip ChEBI"),
-            (self._enrich_no_kg, "Skip KEGG"),
-            (self._enrich_no_hm, "Skip HMDB"),
-            (self._enrich_no_em, "Skip Exact Mass"),
-            (self._enrich_no_sp, "Skip SPLASH"),
-        ]
-
-        for var, label in sources:
-            ttk.Checkbutton(src_fr, text=label, variable=var).pack(side=tk.LEFT, padx=(0, 12))
-
-        # Options
-        opt_fr = ttk.Frame(self._enrich_frame_inner)
-        opt_fr.pack(fill=tk.X, pady=(0, 4))
-
-        self._enrich_fetch_mol = tk.BooleanVar()
-        ttk.Checkbutton(opt_fr, text="Fetch 2-D structures", variable=self._enrich_fetch_mol
-                       ).pack(side=tk.LEFT, padx=(0, 12))
-
-        self._enrich_overwrite = tk.BooleanVar()
-        ttk.Checkbutton(opt_fr, text="Overwrite existing", variable=self._enrich_overwrite
-                       ).pack(side=tk.LEFT, padx=(0, 12))
-
-        ttk.Label(opt_fr, text="API delay (s):").pack(side=tk.LEFT, padx=(0, 4))
-        self._enrich_delay = tk.StringVar(value="0.5")
-        spin = ttk.Spinbox(opt_fr, from_=0.0, to=5.0, increment=0.1,
-                          textvariable=self._enrich_delay, width=5)
-        spin.pack(side=tk.LEFT)
-
-        # Buttons
-        btn_fr = ttk.Frame(self._enrich_frame_inner)
-        btn_fr.pack(fill=tk.X)
-
-        ttk.Button(btn_fr, text="Save Defaults",
-                  command=self._enrich_save_defaults).pack(side=tk.LEFT, padx=(0, 4))
-
-        ttk.Button(btn_fr, text="Enrich",
-                  command=self._enrich_run).pack(side=tk.LEFT)
-
-        self._load_enricher_settings()
-
-    def _load_enricher_settings(self) -> None:
-        """Load enrichment settings from app settings."""
-        s = self._settings
-        self._enrich_no_pc.set(s.get("e_no_pubchem", False))
-        self._enrich_no_ch.set(s.get("e_no_chebi", False))
-        self._enrich_no_kg.set(s.get("e_no_kegg", False))
-        self._enrich_no_hm.set(s.get("e_no_hmdb", False))
-        self._enrich_no_em.set(s.get("e_no_exact_mass", False))
-        self._enrich_no_sp.set(s.get("e_no_splash", False))
-        self._enrich_fetch_mol.set(s.get("e_fetch_mol", False))
-        self._enrich_overwrite.set(s.get("e_overwrite", False))
-        self._enrich_delay.set(str(s.get("e_delay", 0.5)))
-
-    def _enrich_save_defaults(self) -> None:
-        """Save enrichment settings as defaults."""
-        s = self._settings
-        s["e_no_pubchem"] = self._enrich_no_pc.get()
-        s["e_no_chebi"] = self._enrich_no_ch.get()
-        s["e_no_kegg"] = self._enrich_no_kg.get()
-        s["e_no_hmdb"] = self._enrich_no_hm.get()
-        s["e_no_exact_mass"] = self._enrich_no_em.get()
-        s["e_no_splash"] = self._enrich_no_sp.get()
-        s["e_fetch_mol"] = self._enrich_fetch_mol.get()
-        s["e_overwrite"] = self._enrich_overwrite.get()
-        try:
-            s["e_delay"] = float(self._enrich_delay.get())
-        except ValueError:
-            s["e_delay"] = 0.5
-        s.save()
-        messagebox.showinfo("Success", "Enrichment defaults saved")
-
-    def _enrich_run(self) -> None:
-        """Run enrichment on currently loaded compounds."""
-        if not self._db_conn:
-            messagebox.showwarning("No Database", "No compounds loaded. Please load an SDF, MSPEC, or JDX file first.")
-            return
-
-        try:
-            from sdf_enricher.enricher import EnrichConfig, enrich_records
-            from sdf_enricher.sdf_io import read_sdf, write_sdf
-        except ImportError:
-            messagebox.showerror("Not Available",
-                "SDF Enricher module not installed.\n\n"
-                "Install with: pip install sdf-enricher")
-            return
-
-        messagebox.showinfo("Enrichment",
-            "Enrichment feature requires direct SDF file input/output.\n\n"
-            "Please use the SDF Enricher tab or enrich your files separately.\n\n"
-            "Database enrichment is not yet available.")
 
     def _on_persist_toggled(self) -> None:
         """Handle persistent database checkbox toggle."""
@@ -3582,7 +3773,10 @@ class EIFragmentApp(tk.Tk):
         elem_tab = _ElementTab(nb)
         nb.add(elem_tab, text="  Element Table  ")
 
-        self._viewer_tab = _SDFViewerTab(nb, self._settings)
+        self._enrich_tab = _EnrichTab(nb, self._settings)
+        nb.add(self._enrich_tab, text="  SDF Enricher  ")
+
+        self._viewer_tab = _SDFViewerTab(nb)
         nb.add(self._viewer_tab, text="  Compound Database  ")
 
         pkg_tab = _PackagesTab(nb)
