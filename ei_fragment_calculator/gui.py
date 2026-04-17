@@ -644,6 +644,8 @@ class _CalcTab(ttk.Frame):
         else:
             self._adv_frame.pack(fill=tk.X, pady=(0, 6))
             self._adv_open = True
+        # Force layout recalculation so other widgets rearrange
+        self.update_idletasks()
 
     def _build_compound_list(self, parent: tk.Widget) -> None:
         """Build the compound list treeview in the left pane."""
