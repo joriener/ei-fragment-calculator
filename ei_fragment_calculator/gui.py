@@ -754,7 +754,7 @@ class _CalcTab(ttk.Frame):
 
     def _render_spectrum(self, mz_vals, intensities) -> None:
         """Render a bar chart of m/z vs intensity."""
-        if not self._spectrum_ax or not mz_vals:
+        if not self._spectrum_ax or not self._spectrum_fig or not self._spectrum_canvas or not mz_vals:
             return
 
         self._spectrum_ax.clear()
@@ -767,7 +767,7 @@ class _CalcTab(ttk.Frame):
 
     def _clear_spectrum(self) -> None:
         """Clear spectrum and show placeholder."""
-        if not self._spectrum_ax:
+        if not self._spectrum_ax or not self._spectrum_fig:
             return
 
         self._spectrum_ax.clear()
