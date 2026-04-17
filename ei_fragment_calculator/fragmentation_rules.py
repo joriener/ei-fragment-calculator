@@ -587,11 +587,23 @@ def apply_mclafferty(mol_data: dict) -> list[dict]:
                     if _bond_type(beta_idx, gamma_idx) != 1:
                         continue
 
-                    # γ-atom must have at least one H neighbour
+                    # γ-atom must have at least one H neighbour.
+                    # Check explicit H atoms first (from mol blocks with explicit H);
+                    # fall back to implicit H via valence table (covers PubChem 2D SDF
+                    # where H atoms are not listed in the atom table).
                     h_count = sum(
                         1 for nb in adjacency.get(gamma_idx, [])
                         if atoms[nb]["element"] == "H"
                     )
+                    if h_count == 0:
+                        el_gamma = atoms[gamma_idx]["element"]
+                        valence_gamma = _IMPLICIT_VALENCE.get(el_gamma, 0)
+                        if valence_gamma > 0:
+                            used_gamma = sum(
+                                b["type"] for b in bonds
+                                if b["a1"] == gamma_idx or b["a2"] == gamma_idx
+                            )
+                            h_count = max(0, valence_gamma - used_gamma)
                     if h_count == 0:
                         continue
 
@@ -605,16 +617,28 @@ def apply_mclafferty(mol_data: dict) -> list[dict]:
                         adjacency, c_idx, exclude_edge=(alpha_idx, beta_idx))
                     neutral_atoms = frozenset(range(len(atoms))) - enol_atoms
 
-                    # Add implicit H, then adjust for H migration
+                    # Add implicit H, then apply two corrections:
+                    #
+                    #  (1) H migration: one H moves from γ-atom to carbonyl O
+                    #      → +1H on enol side, −1H on neutral side
+                    #
+                    #  (2) New C=C double bonds form in BOTH fragments:
+                    #      • In the enol, CarbonylC=Cα forms (was single in
+                    #        _add_implicit_h calculation → Cα gets 1 extra H
+                    #        that it shouldn't have) → −1H on enol side
+                    #      • In the neutral, Cβ=Cγ forms (same over-count
+                    #        for Cβ) → −1H on neutral side
+                    #
+                    #  Net: enol unchanged (+1−1=0), neutral −2 (−1−1).
                     enol_comp  = _add_implicit_h(
                         _atoms_to_composition(atoms, enol_atoms),
                         atoms, bonds, enol_atoms)
                     neut_comp  = _add_implicit_h(
                         _atoms_to_composition(atoms, neutral_atoms),
                         atoms, bonds, neutral_atoms)
-                    # One H migrates from γ to O
-                    enol_comp["H"]  = enol_comp.get("H", 0) + 1
-                    neut_comp["H"]  = max(0, neut_comp.get("H", 0) - 1)
+                    # Apply corrections (see derivation above)
+                    # enol net: 0 (H migration +1 cancels new C=C −1)
+                    neut_comp["H"]  = max(0, neut_comp.get("H", 0) - 2)
 
                     results.append({
                         "rule":             "mclafferty",
