@@ -1116,6 +1116,10 @@ class _CalcTab(ttk.Frame):
         self._running = True
         _clear_log(self._log)
 
+        # Clear peak table at start of run
+        if self._peak_table:
+            self._peak_table.delete(*self._peak_table.get_children())
+
         rd = _Redirector(self._log, self.winfo_toplevel())
         threading.Thread(target=self._worker, args=(argv, rd), daemon=True).start()
 
@@ -1151,75 +1155,53 @@ class _CalcTab(ttk.Frame):
     def _load_results_from_sdf(self, output_sdf: str, compound_idx: int) -> None:
         """Load results from output SDF and populate peak table."""
         try:
-            from .sdf_parser import parse_sdf
-            from .formula import parse_formula
-            from .calculator import calculate_dbe, ion_mass
-
-            results_records = parse_sdf(output_sdf)
-            if compound_idx >= len(results_records):
-                return
-
-            result_record = results_records[compound_idx]
+            from .sdf_parser import parse_sdf, parse_peaks_with_intensity
             input_record = self._parsed_records[compound_idx]
 
             # Get input peaks
             input_peak_text = input_record["fields"].get("MASS SPECTRAL PEAKS", "")
-            from .sdf_parser import parse_peaks_with_intensity
             input_pairs = parse_peaks_with_intensity(input_peak_text)
 
-            # Get result formula assignments
-            result_formulas = result_record["fields"].get("EXACT MASS FORMULAS", "")
+            # Try to get results from output SDF
+            results_records = parse_sdf(output_sdf)
+            result_record = results_records[compound_idx] if compound_idx < len(results_records) else None
 
-            # Clear and populate peak table
-            self._peak_table.delete(*self._peak_table.get_children())
+            # Get output exact masses (if available)
+            output_peaks = []
+            if result_record:
+                output_peak_text = result_record["fields"].get("MASS SPECTRAL PEAKS", "")
+                try:
+                    output_peaks = parse_peaks_with_intensity(output_peak_text)
+                except:
+                    output_peaks = []
 
+            # Build map of input m/z to output exact masses
+            output_map = {}
+            if output_peaks:
+                for exact_mz, intensity in output_peaks:
+                    nominal_mz = round(exact_mz)
+                    output_map[nominal_mz] = exact_mz
+
+            # Populate table with input peaks and any matched outputs
             if input_pairs:
-                # Build a map of m/z to formula assignments from results
-                formula_map = {}
-                if result_formulas:
-                    # Parse the result format (assumed to be "mz: formula" per line)
-                    for line in result_formulas.split("\n"):
-                        line = line.strip()
-                        if ":" in line:
-                            try:
-                                mz_str, formula_str = line.split(":", 1)
-                                mz = int(mz_str.strip())
-                                formula = formula_str.strip()
-                                if formula not in formula_map.get(mz, []):
-                                    formula_map.setdefault(mz, []).append(formula)
-                            except ValueError:
-                                pass
-
-                # Populate table with input peaks and matched formulas
                 for input_mz, intensity in input_pairs:
-                    formula_list = formula_map.get(int(input_mz), [])
-                    if formula_list:
-                        # Show first matching formula
-                        formula = formula_list[0]
-                        try:
-                            parsed = parse_formula(formula)
-                            exact_mass = ion_mass(parsed)
-                            delta = input_mz - exact_mass
-                            dbe = calculate_dbe(parsed)
-                            tag = "pass"
-                        except Exception:
-                            exact_mass, delta, dbe = "", "", ""
-                            tag = "fail"
-
-                        self._peak_table.insert("", tk.END,
-                                               values=(input_mz, f"{intensity:.0f}",
-                                                       formula,
-                                                       f"{exact_mass:.4f}" if exact_mass else "",
-                                                       f"{delta:.4f}" if delta else "",
-                                                       dbe,
-                                                       "PASS"),
-                                               tags=(tag,))
+                    if int(input_mz) in output_map:
+                        # Peak has a matched result
+                        exact_mass = output_map[int(input_mz)]
+                        tag = "pass"
+                        filter_status = "PASS"
                     else:
-                        # No formula found
-                        self._peak_table.insert("", tk.END,
-                                               values=(input_mz, f"{intensity:.0f}",
-                                                       "", "", "", "", "FAIL"),
-                                               tags=("fail",))
+                        # Peak not in output (no matching formula)
+                        exact_mass = ""
+                        tag = "fail"
+                        filter_status = "FAIL"
+
+                    self._peak_table.insert("", tk.END,
+                                           values=(input_mz, f"{intensity:.0f}",
+                                                   "",
+                                                   f"{exact_mass:.6f}" if exact_mass else "",
+                                                   "", "", filter_status),
+                                           tags=(tag,))
 
         except Exception as e:
             # Silently fail if results can't be loaded

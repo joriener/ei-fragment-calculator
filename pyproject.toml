@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ei-fragment-calculator"
-version = "1.9.1"
+version = "1.9.2"
 description = "Calculate possible exact masses for peaks in EI mass spectra using the molecular formula as an elemental upper bound."
 readme = "README.md"
 license = "MIT"
