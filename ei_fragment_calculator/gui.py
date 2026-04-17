@@ -1490,7 +1490,7 @@ class _SDFViewerTab(ttk.Frame):
         # ── Main Content Area ──────────────────────────────────────────────
         try:
             content_fr = ttk.Frame(self)
-            content_fr.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+            content_fr.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
             content_fr.columnconfigure(0, weight=0)
             content_fr.columnconfigure(1, weight=0)
             content_fr.columnconfigure(2, weight=1)
@@ -1501,7 +1501,22 @@ class _SDFViewerTab(ttk.Frame):
             list_fr = ttk.LabelFrame(content_fr, text=" Compounds ", padding=4)
             list_fr.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 4))
             list_fr.columnconfigure(0, weight=1)
-            list_fr.rowconfigure(0, weight=1)
+            list_fr.rowconfigure(1, weight=1)
+
+            # Search controls - inside compound list frame
+            search_fr = ttk.Frame(list_fr)
+            search_fr.grid(row=0, column=0, sticky=tk.EW, pady=(0, 4))
+            search_fr.columnconfigure(1, weight=1)
+
+            ttk.Label(search_fr, text="Search:").grid(row=0, column=0, padx=(0, 6))
+
+            self._search_var = tk.StringVar()
+            self._search_var.trace('w', self._on_search_changed)
+            search_entry = ttk.Entry(search_fr, textvariable=self._search_var, width=20)
+            search_entry.grid(row=0, column=1, sticky=tk.EW, padx=(0, 6))
+
+            self._search_result_label = ttk.Label(search_fr, text="", foreground="#666666", font=("Arial", 8))
+            self._search_result_label.grid(row=0, column=2, sticky=tk.W)
 
             self._compound_tree = ttk.Treeview(list_fr, columns=("Name",), show="tree headings",
                                                height=15)
@@ -1509,7 +1524,7 @@ class _SDFViewerTab(ttk.Frame):
             self._compound_tree.column("Name", width=0)
             self._compound_tree.heading("#0", text="Compound")
             self._compound_tree.heading("Name", text="")
-            self._compound_tree.pack(fill=tk.BOTH, expand=True)
+            self._compound_tree.grid(row=1, column=0, sticky=tk.NSEW)
             self._compound_tree.bind("<<TreeviewSelect>>", self._on_compound_selected)
         except Exception as e:
             print(f"Error building content area: {e}")
@@ -1609,24 +1624,6 @@ class _SDFViewerTab(ttk.Frame):
 
         except Exception as e:
             print(f"Error building navigation controls: {e}")
-
-        # ── Search Controls ────────────────────────────────────────────────────
-        try:
-            search_fr = ttk.Frame(self)
-            search_fr.pack(fill=tk.X, pady=(0, 6))
-
-            ttk.Label(search_fr, text="Search Compounds:").pack(side=tk.LEFT, padx=(0, 6))
-
-            self._search_var = tk.StringVar()
-            self._search_var.trace('w', self._on_search_changed)
-            search_entry = ttk.Entry(search_fr, textvariable=self._search_var, width=40)
-            search_entry.pack(side=tk.LEFT, padx=(0, 6), fill=tk.X, expand=True)
-
-            self._search_result_label = ttk.Label(search_fr, text="", foreground="#666666")
-            self._search_result_label.pack(side=tk.LEFT)
-
-        except Exception as e:
-            print(f"Error building search controls: {e}")
 
         # ── Export Controls ───────────────────────────────────────────────
         try:
