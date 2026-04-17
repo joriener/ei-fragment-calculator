@@ -1444,6 +1444,9 @@ class _SDFViewerTab(ttk.Frame):
         self._db_conn = None
         self._db_cursor = None
         self._current_query_results = []
+        self._db_path_var = tk.StringVar()
+        self._persist_db_var = tk.BooleanVar(value=False)
+        self._db_file_label = None
         
         try:
             self._build()
@@ -1466,6 +1469,21 @@ class _SDFViewerTab(ttk.Frame):
                 row=0, column=2, padx=(0, 2))
             ttk.Button(file_fr, text="Load", command=self._load_button_clicked).grid(
                 row=0, column=3)
+
+            # Persistent database option
+            db_fr = ttk.Frame(file_fr)
+            db_fr.grid(row=1, column=0, columnspan=4, sticky=tk.EW, pady=(6, 0))
+            db_fr.columnconfigure(2, weight=1)
+
+            ttk.Checkbutton(db_fr, text="Save database to file:",
+                           variable=self._persist_db_var).pack(side=tk.LEFT, padx=(0, 6))
+
+            ttk.Button(db_fr, text="Choose Location…",
+                      command=self._choose_db_file).pack(side=tk.LEFT, padx=(0, 6))
+
+            self._db_file_label = ttk.Label(db_fr, text="(in-memory)", foreground="#666666")
+            self._db_file_label.pack(side=tk.LEFT)
+
         except Exception as e:
             print(f"Error building file selection: {e}")
 
@@ -1657,10 +1675,35 @@ class _SDFViewerTab(ttk.Frame):
                 print(f"[DEBUG] File exists, loading: {path}")
                 self._load_sdf(path)
 
-    def _init_database(self) -> None:
+    def _choose_db_file(self) -> None:
+        """Choose location for persistent database file."""
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".db",
+            filetypes=[("SQLite Database", "*.db"), ("All files", "*.*")],
+            title="Save Database As"
+        )
+        if file_path:
+            self._db_path_var.set(file_path)
+            self._db_file_label.config(
+                text=f"({file_path.split('/')[-1]})",
+                foreground="#0066cc"
+            )
+
+    def _init_database(self, db_path: str = None) -> None:
         """Initialize SQLite database with 4-table schema."""
         try:
-            self._db_conn = sqlite3.connect(":memory:")
+            # Close existing connection if any
+            if self._db_conn:
+                try:
+                    self._db_conn.close()
+                except:
+                    pass
+
+            # Use provided path or in-memory
+            if db_path is None:
+                db_path = ":memory:"
+
+            self._db_conn = sqlite3.connect(db_path)
             self._db_conn.execute("PRAGMA foreign_keys = ON")
             self._db_cursor = self._db_conn.cursor()
 
@@ -1839,7 +1882,11 @@ class _SDFViewerTab(ttk.Frame):
 
             # Initialize database
             print("[DEBUG] Initializing database...")
-            self._init_database()
+            db_path = None
+            if self._persist_db_var.get() and self._db_path_var.get():
+                db_path = self._db_path_var.get()
+                print(f"[DEBUG] Using persistent database: {db_path}")
+            self._init_database(db_path)
             self._current_query_results = []
 
             # Try to parse with RDKit
