@@ -1435,6 +1435,10 @@ class _SDFViewerTab(ttk.Frame):
         self._filter_label = None
         self._clear_filter_btn = None
         self._spec_canvas_frame = None
+        self._edit_metadata_btn = None
+        self._edit_spectrum_btn = None
+        self._search_var = None
+        self._search_result_label = None
 
         # Database attributes for SQLite backend
         self._db_conn = None
@@ -1514,8 +1518,17 @@ class _SDFViewerTab(ttk.Frame):
             right_fr.columnconfigure(0, weight=1)
             right_fr.rowconfigure(1, weight=1)
 
-            self._info_label = ttk.Label(right_fr, text="No file loaded", foreground="#666666")
-            self._info_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
+            # Header with label and button
+            header_fr = ttk.Frame(right_fr)
+            header_fr.grid(row=0, column=0, sticky=tk.EW, pady=(0, 4))
+            header_fr.columnconfigure(0, weight=1)
+
+            self._info_label = ttk.Label(header_fr, text="No file loaded", foreground="#666666")
+            self._info_label.pack(side=tk.LEFT)
+
+            self._edit_metadata_btn = ttk.Button(header_fr, text="Edit Metadata",
+                                                command=self._edit_metadata, state=tk.DISABLED)
+            self._edit_metadata_btn.pack(side=tk.RIGHT)
 
             self._meta_text = scrolledtext.ScrolledText(right_fr, height=15, width=40,
                                                          font=("Courier", 9),
@@ -1529,11 +1542,20 @@ class _SDFViewerTab(ttk.Frame):
             # Bottom panel: Mass Spectrum Plot
             spec_fr = ttk.LabelFrame(content_fr, text=" Mass Spectrum ", padding=4)
             spec_fr.grid(row=1, column=0, columnspan=3, sticky=tk.NSEW, pady=(4, 0))
-            spec_fr.columnconfigure(0, weight=1)
-            spec_fr.rowconfigure(0, weight=1)
+            spec_fr.columnconfigure(1, weight=1)
+            spec_fr.rowconfigure(1, weight=1)
+
+            # Header with button
+            spec_header_fr = ttk.Frame(spec_fr)
+            spec_header_fr.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 4))
+            spec_header_fr.columnconfigure(0, weight=1)
+
+            self._edit_spectrum_btn = ttk.Button(spec_header_fr, text="Edit Spectrum",
+                                               command=self._edit_mass_spectrum, state=tk.DISABLED)
+            self._edit_spectrum_btn.pack(side=tk.RIGHT)
 
             self._spec_canvas_frame = ttk.Frame(spec_fr)
-            self._spec_canvas_frame.grid(row=0, column=0, sticky=tk.NSEW)
+            self._spec_canvas_frame.grid(row=1, column=0, columnspan=2, sticky=tk.NSEW)
             self._spec_canvas_frame.columnconfigure(0, weight=1)
             self._spec_canvas_frame.rowconfigure(0, weight=1)
         except Exception as e:
@@ -1542,7 +1564,7 @@ class _SDFViewerTab(ttk.Frame):
         # ── Navigation Controls ─────────────────────────────────────────────
         try:
             nav_fr = ttk.Frame(self)
-            nav_fr.pack(fill=tk.X)
+            nav_fr.pack(fill=tk.X, pady=(0, 6))
 
             # Navigation buttons
             ttk.Button(nav_fr, text="◀ Previous", command=self._prev_record).pack(
@@ -1552,19 +1574,6 @@ class _SDFViewerTab(ttk.Frame):
 
             # Jump to record button
             ttk.Button(nav_fr, text="Jump to…", command=self._jump_to_record).pack(
-                side=tk.LEFT, padx=(0, 4))
-
-            # Search button
-            ttk.Button(nav_fr, text="Search…", command=self._search_compounds).pack(
-                side=tk.LEFT, padx=(0, 2))
-
-            # Separator
-            ttk.Separator(nav_fr, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
-
-            # Edit buttons
-            ttk.Button(nav_fr, text="Edit Metadata", command=self._edit_metadata).pack(
-                side=tk.LEFT, padx=(0, 4))
-            ttk.Button(nav_fr, text="Edit Peaks", command=self._edit_mass_spectrum).pack(
                 side=tk.LEFT, padx=(0, 6))
 
             # Navigation label
@@ -1579,8 +1588,27 @@ class _SDFViewerTab(ttk.Frame):
             self._clear_filter_btn = ttk.Button(nav_fr, text="Clear Filter",
                                                command=self._clear_filter, state=tk.DISABLED)
             self._clear_filter_btn.pack(side=tk.LEFT)
+
         except Exception as e:
             print(f"Error building navigation controls: {e}")
+
+        # ── Search Controls ────────────────────────────────────────────────────
+        try:
+            search_fr = ttk.Frame(self)
+            search_fr.pack(fill=tk.X, pady=(0, 6))
+
+            ttk.Label(search_fr, text="Search Compounds:").pack(side=tk.LEFT, padx=(0, 6))
+
+            self._search_var = tk.StringVar()
+            self._search_var.trace('w', self._on_search_changed)
+            search_entry = ttk.Entry(search_fr, textvariable=self._search_var, width=40)
+            search_entry.pack(side=tk.LEFT, padx=(0, 6), fill=tk.X, expand=True)
+
+            self._search_result_label = ttk.Label(search_fr, text="", foreground="#666666")
+            self._search_result_label.pack(side=tk.LEFT)
+
+        except Exception as e:
+            print(f"Error building search controls: {e}")
 
         # ── Export Controls ───────────────────────────────────────────────
         try:
@@ -1730,7 +1758,15 @@ class _SDFViewerTab(ttk.Frame):
                     """, (compound_id, field_name, str(field_value)))
 
             # Parse and insert mass spectrum peaks if available
-            peaks_field = fields.get("Num Peaks", fields.get("PEAKS", ""))
+            # Check multiple field names for compatibility with different SDF formats
+            peaks_field = None
+            peaks_candidates = ["Num Peaks", "PEAKS", "MASS SPECTRAL PEAKS", "MASS SPECTRUM",
+                              "MS PEAKS", "MS DATA", "peaks", "mass_spectrum"]
+            for candidate in peaks_candidates:
+                if candidate in fields and fields[candidate]:
+                    peaks_field = fields[candidate]
+                    break
+
             if peaks_field:
                 try:
                     peaks = self._parse_peaks_from_field(peaks_field)
@@ -2055,6 +2091,12 @@ class _SDFViewerTab(ttk.Frame):
             except Exception as e:
                 print(f"Error updating info label: {e}")
 
+        # Enable edit buttons
+        if self._edit_metadata_btn:
+            self._edit_metadata_btn.config(state=tk.NORMAL)
+        if self._edit_spectrum_btn:
+            self._edit_spectrum_btn.config(state=tk.NORMAL)
+
     def _plot_mass_spectrum(self, fields: dict) -> None:
         """Plot mass spectral peaks if available."""
         # Clear previous canvas
@@ -2095,8 +2137,8 @@ class _SDFViewerTab(ttk.Frame):
             fig = Figure(figsize=(12, 3), dpi=100)
             ax = fig.add_subplot(111)
 
-            # Plot as bar chart
-            ax.bar(mz_values, intensity_values, width=0.8, color="#0078D4", alpha=0.7)
+            # Plot as bar chart with thinner peaks
+            ax.bar(mz_values, intensity_values, width=0.3, color="#0078D4", alpha=0.7, edgecolor="#0055AA", linewidth=0.5)
             ax.set_xlabel("m/z", fontsize=10)
             ax.set_ylabel("Intensity", fontsize=10)
             ax.set_title("Mass Spectrum", fontsize=11, fontweight="bold")
@@ -2292,6 +2334,52 @@ class _SDFViewerTab(ttk.Frame):
         if self._records:
             self._show_record(0, highlight_in_tree=True)
             self._update_nav_label()
+
+    def _on_search_changed(self, var, index, mode) -> None:
+        """Handle real-time search as user types."""
+        if not self._db_conn:
+            return
+
+        search_term = self._search_var.get().strip()
+
+        if not search_term:
+            # Empty search - show all compounds
+            self._current_query_results = []
+            self._clear_filter_btn.config(state=tk.DISABLED)
+            self._filter_label.config(text="")
+            self._search_result_label.config(text="")
+            self._populate_compound_list()
+            if self._records:
+                self._show_record(0, highlight_in_tree=True)
+                self._update_nav_label()
+            return
+
+        try:
+            # Query database for matching compounds
+            query = "SELECT id, name FROM compounds WHERE LOWER(name) LIKE LOWER('%' || ? || '%') ORDER BY id"
+            results = self._db_cursor.execute(query, (search_term,)).fetchall()
+
+            if results:
+                self._current_query_results = results
+                total = self._db_cursor.execute("SELECT COUNT(*) FROM compounds").fetchone()[0]
+                self._search_result_label.config(
+                    text=f"Found {len(results)} of {total}",
+                    foreground="#0066cc"
+                )
+                self._clear_filter_btn.config(state=tk.NORMAL)
+                self._filter_label.config(text=f"Filtered: {len(results)} of {total}")
+                # Populate tree with results
+                self._populate_compound_list()
+                # Show first result
+                if results:
+                    self._show_record(results[0][0] - 1, highlight_in_tree=True)
+                    self._update_nav_label()
+            else:
+                self._search_result_label.config(text="No matches found", foreground="#cc0000")
+                self._current_query_results = []
+                self._populate_compound_list()
+        except Exception as e:
+            self._search_result_label.config(text=f"Error: {str(e)[:20]}", foreground="#cc0000")
 
     def _edit_metadata(self) -> None:
         """Open metadata editor dialog for current record."""
