@@ -50,9 +50,14 @@ except ImportError:
 
 try:
     import matplotlib                   # noqa: F401
+    matplotlib.use('TkAgg')  # Use TkAgg backend for Tkinter integration
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     _HAS_MATPLOTLIB = True
 except ImportError:
     _HAS_MATPLOTLIB = False
+    Figure = None
+    FigureCanvasTkAgg = None
 
 # ---------------------------------------------------------------------------
 # Paths — handle both normal installs and PyInstaller-frozen builds.
