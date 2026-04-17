@@ -9,7 +9,8 @@ Tabs
 1. Fragment Calculator  — all CLI options, editable defaults, custom I/O paths
 2. Element Table        — inline CRUD editor for data/elements.csv
 3. SDF Enricher         — (visible only when sdf-enricher is installed)
-4. Packages             — check and auto-install optional dependencies
+4. SDF Viewer           — browse structures, view metadata, plot mass spectra (requires RDKit, Pillow & Matplotlib)
+5. Packages             — check and auto-install optional dependencies
 
 Launch
 ------
@@ -24,6 +25,7 @@ import importlib.util
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -1034,6 +1036,7 @@ class _EnrichTab(ttk.Frame):
         super().__init__(master, padding=10)
         self._settings = settings
         self._running  = False
+        self._stop_event = threading.Event()
         self._out_path = tk.StringVar(value="")
         self._build()
         self._load_settings()
@@ -1056,6 +1059,7 @@ class _EnrichTab(ttk.Frame):
             row=1, column=1, sticky=tk.EW, padx=(6, 4))
         ttk.Button(io, text="Browse…", command=self._browse_out
                    ).grid(row=1, column=2)
+
 
         # Sources
         src = ttk.LabelFrame(self, text=" Data Sources  (all ON by default) ",
@@ -1104,6 +1108,9 @@ class _EnrichTab(ttk.Frame):
         self._run_btn = ttk.Button(run_fr, text="\u25b6  Enrich",
                                    style="Accent.TButton", command=self._run)
         self._run_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self._stop_btn = ttk.Button(run_fr, text="\u23f9  Stop",
+                                    state="disabled", command=self._stop)
+        self._stop_btn.pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(run_fr, text="Clear",
                    command=lambda: _clear_log(self._log)).pack(side=tk.LEFT, padx=(0, 6))
         self._open_btn = ttk.Button(run_fr, text="\U0001f4c2  Open output folder",
@@ -1177,6 +1184,88 @@ class _EnrichTab(ttk.Frame):
             except ImportError:
                 pass
 
+    @staticmethod
+    def _find_field_key(fields: dict, candidates: list) -> str | None:
+        """Find actual dict key matching a candidate (case-insensitive). O(n) instead of O(n*m)."""
+        upper_map = {k.upper(): k for k in fields}
+        for candidate in candidates:
+            if candidate.upper() in upper_map:
+                return upper_map[candidate.upper()]
+        return None
+
+    def _format_cas_numbers(self, records: list) -> None:
+        """
+        1. Extract compound name from <NAME> field and update MOL block header
+        2. Add a new <CAS> field with formatted CAS number
+        3. Keep original <CASNO> unchanged
+        """
+        name_candidates = ["NAME", "COMPOUND NAME", "COMPOUND_NAME"]
+        cas_candidates = ["CASNO", "CAS NO", "CAS_NO", "CAS NUMBER"]
+        formatted_count = 0
+        name_count = 0
+
+        for record in records:
+            fields = record.get("fields", {})
+            mol_block = record.get("mol_block", "")
+
+            # 1. Extract real compound name from <NAME> field
+            name_key = self._find_field_key(fields, name_candidates)
+            if name_key:
+                real_name = fields[name_key].strip()
+                if real_name and real_name != "No Structure":
+                    # Set all possible name keys that sdf-enricher might use
+                    record["compound_name"] = real_name
+                    record["name"] = real_name
+
+                    # Update MOL block first line with real name (more efficient)
+                    if mol_block:
+                        newline_idx = mol_block.find("\n")
+                        if newline_idx >= 0:
+                            record["mol_block"] = real_name[:80] + mol_block[newline_idx:]
+                    name_count += 1
+
+            # 2. Add <CAS> field with formatted CAS number (keep <CASNO> as is)
+            cas_key = self._find_field_key(fields, cas_candidates)
+            if cas_key:
+                cas_val = fields[cas_key].strip()
+                formatted = self._format_single_cas(cas_val)
+                if formatted != cas_val:
+                    # Add new <CAS> field with formatted value
+                    fields["CAS"] = formatted
+                    formatted_count += 1
+
+        if name_count > 0:
+            print(f"  Updated {name_count} MOL block header(s) with real compound name(s).")
+        if formatted_count > 0:
+            print(f"  Added {formatted_count} formatted <CAS> field(s).")
+
+    def _format_single_cas(self, cas_str: str) -> str:
+        """
+        Format a single CAS number string.
+
+        Handles:
+          - Already formatted: '108-95-2' -> '108-95-2' (no change)
+          - Missing hyphens: '108952' -> '108-95-2'
+        """
+        cas_str = cas_str.strip()
+
+        # Already formatted correctly (contains hyphens)
+        if "-" in cas_str:
+            return cas_str
+
+        # Remove any non-digit characters
+        digits = re.sub(r"\D", "", cas_str)
+        if len(digits) < 5:
+            return cas_str  # Too short, probably invalid
+
+        # CAS format: first part (variable length), then -NN-N
+        # Last digit is check digit, second-to-last two are sequence
+        # Everything before that is the main number
+        main = digits[:-3]
+        part2 = digits[-3:-1]
+        part3 = digits[-1]
+        return f"{main}-{part2}-{part3}"
+
     def _open_folder(self) -> None:
         p = self._out_path.get()
         if p:
@@ -1209,7 +1298,9 @@ class _EnrichTab(ttk.Frame):
         )
         out = self._out_path.get().strip() or None
 
+        self._stop_event.clear()
         self._run_btn.configure(state="disabled")
+        self._stop_btn.configure(state="normal")
         self._open_btn.configure(state="disabled")
         self._status.set("Enriching\u2026")
         self._pb.start(12)
@@ -1221,42 +1312,86 @@ class _EnrichTab(ttk.Frame):
         threading.Thread(target=self._worker, args=(sdf, cfg, out, rd, fetch_mol),
                          daemon=True).start()
 
+    def _stop(self) -> None:
+        """Signal the worker thread to stop."""
+        self._stop_event.set()
+        self._stop_btn.configure(state="disabled")
+        self._status.set("Stopping\u2026")
+
     def _worker(self, sdf_path: str, cfg: dict, out_path: str | None,
                 rd: _Redirector, fetch_mol: bool = True) -> None:
         from sdf_enricher.sdf_io   import read_sdf, write_sdf, enriched_path
         from sdf_enricher.enricher import EnrichConfig, enrich_records
         old_o, old_e = sys.stdout, sys.stderr
-        sys.stdout = rd; sys.stderr = rd
-        ok = True; final_out = out_path or ""
+        sys.stdout = rd
+        sys.stderr = rd
+        ok = True
+        final_out = out_path
         try:
             records = read_sdf(sdf_path)
-            print("SDF Enricher\n  Input   : {}\n  Records : {}\n".format(
-                sdf_path, len(records)))
+            print(f"SDF Enricher\n  Input   : {sdf_path}\n  Records : {len(records)}\n")
+
+            # Check for stop signal
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
+            # Format malformed CAS numbers and extract real compound names
+            self._format_cas_numbers(records)
+
+            # Check for stop signal before enrichment
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
+            # Public databases enrichment (blocking call — can't be interrupted mid-execution)
+            print("\nEnriching with public chemical databases…")
+            print("(This step cannot be stopped once it starts)")
             enrich_records(records, config=EnrichConfig(**cfg), verbose=True)
+
+            # Check for stop signal after enrichment completes
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
             if fetch_mol:
                 from .structure_fetcher import enrich_mol_blocks, _mol_block_has_atoms
-                missing = sum(1 for r in records if not _mol_block_has_atoms(r.get("mol_block", "")))
-                if missing:
-                    print("\nFetching 2-D structures from PubChem ({} record(s) without structure)\u2026".format(missing))
+                records_missing_mol = [r for r in records if not _mol_block_has_atoms(r.get("mol_block", ""))]
+                if records_missing_mol:
+                    print(f"\nFetching 2-D structures from PubChem ({len(records_missing_mol)} record(s) without structure)…")
                     def _prog(done, total, name):
-                        print("  [{}/{}] {}".format(done, total, name or "(unnamed)"))
+                        # Check for stop signal during progress
+                        if self._stop_event.is_set():
+                            raise KeyboardInterrupt("Enrichment cancelled by user.")
+                        print(f"  [{done}/{total}] {name or '(unnamed)'}")
                     enrich_mol_blocks(records, progress_callback=_prog)
                 else:
                     print("\nAll records already have 2-D structures — skipping PubChem fetch.")
+
+            # Check for stop signal before saving
+            if self._stop_event.is_set():
+                print("\nEnrichment cancelled by user.")
+                return
+
             final_out = out_path or enriched_path(sdf_path)
             n = write_sdf(records, final_out)
-            print("\nSaved {} record(s) to '{}'.".format(n, final_out))
+            print(f"\nSaved {n} record(s) to '{final_out}'.")
+        except KeyboardInterrupt:
+            sys.stderr.write("\nEnrichment stopped by user.\n")
+            ok = False
         except Exception as exc:
-            sys.stderr.write("\nERROR: {}\n".format(exc))
+            sys.stderr.write(f"\nERROR: {exc}\n")
             ok = False
         finally:
-            sys.stdout = old_o; sys.stderr = old_e
-        self.winfo_toplevel().after(0, self._done, ok, final_out)
+            sys.stdout = old_o
+            sys.stderr = old_e
+        self.winfo_toplevel().after(0, self._done, ok, final_out or "")
 
     def _done(self, ok: bool, out_path: str) -> None:
         self._running = False
         self._pb.stop()
         self._run_btn.configure(state="normal")
+        self._stop_btn.configure(state="disabled")
         self._status.set("Done." if ok else "Finished with errors.")
         if out_path and Path(out_path).exists():
             self._out_path.set(out_path)
@@ -1264,7 +1399,1657 @@ class _EnrichTab(ttk.Frame):
 
 
 # ===========================================================================
-# Tab 4 — Packages
+# Tab 4 — SDF Viewer
+# ===========================================================================
+
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Draw
+    _HAS_RDKIT = True
+except ImportError:
+    _HAS_RDKIT = False
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
+    _HAS_MATPLOTLIB = True
+except ImportError:
+    _HAS_MATPLOTLIB = False
+
+
+class _SDFViewerTab(ttk.Frame):
+
+    def __init__(self, master: tk.Widget):
+        super().__init__(master, padding=10)
+        self._records = []
+        self._current_idx = 0
+        self._sdf_path = tk.StringVar()
+        self._sdf_path.trace('w', self._on_sdf_path_change)
+        self._compound_tree = None
+        self._photo = None
+        self._canvas = None
+        self._meta_text = None
+        self._info_label = None
+        self._nav_label = None
+        self._filter_label = None
+        self._clear_filter_btn = None
+        self._spec_canvas_frame = None
+
+        # Database attributes for SQLite backend
+        self._db_conn = None
+        self._db_cursor = None
+        self._current_query_results = []
+        
+        try:
+            self._build()
+        except Exception as e:
+            print(f"Error building SDF Viewer: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _build(self) -> None:
+        # ── File Selection ─────────────────────────────────────────────────
+        try:
+            file_fr = ttk.LabelFrame(self, text=" Load SDF File ", padding=8)
+            file_fr.pack(fill=tk.X, pady=(0, 6))
+            file_fr.columnconfigure(1, weight=1)
+
+            ttk.Label(file_fr, text="SDF File:").grid(row=0, column=0, sticky=tk.W, pady=2)
+            ttk.Entry(file_fr, textvariable=self._sdf_path).grid(
+                row=0, column=1, sticky=tk.EW, padx=(6, 4))
+            ttk.Button(file_fr, text="Browse…", command=self._browse_sdf).grid(
+                row=0, column=2, padx=(0, 2))
+            ttk.Button(file_fr, text="Load", command=self._load_button_clicked).grid(
+                row=0, column=3)
+        except Exception as e:
+            print(f"Error building file selection: {e}")
+
+        # ── Main Content Area ──────────────────────────────────────────────
+        try:
+            content_fr = ttk.Frame(self)
+            content_fr.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+            content_fr.columnconfigure(0, weight=0)
+            content_fr.columnconfigure(1, weight=0)
+            content_fr.columnconfigure(2, weight=1)
+            content_fr.rowconfigure(0, weight=1)
+            content_fr.rowconfigure(1, weight=1)
+
+            # Left panel: Compound List (Simplified)
+            list_fr = ttk.LabelFrame(content_fr, text=" Compounds ", padding=4)
+            list_fr.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 4))
+            list_fr.columnconfigure(0, weight=1)
+            list_fr.rowconfigure(0, weight=1)
+
+            self._compound_tree = ttk.Treeview(list_fr, columns=("Name",), show="tree headings",
+                                               height=15)
+            self._compound_tree.column("#0", width=180)
+            self._compound_tree.column("Name", width=0)
+            self._compound_tree.heading("#0", text="Compound")
+            self._compound_tree.heading("Name", text="")
+            self._compound_tree.pack(fill=tk.BOTH, expand=True)
+            self._compound_tree.bind("<<TreeviewSelect>>", self._on_compound_selected)
+        except Exception as e:
+            print(f"Error building content area: {e}")
+            import traceback
+            traceback.print_exc()
+            self._compound_tree = None
+
+        try:
+            # Middle panel: Structure image
+            mid_fr = ttk.LabelFrame(content_fr, text=" Structure ", padding=4)
+            mid_fr.grid(row=0, column=1, sticky=tk.NSEW, padx=(0, 4))
+            mid_fr.columnconfigure(0, weight=1)
+            mid_fr.rowconfigure(0, weight=1)
+
+            self._canvas = tk.Canvas(mid_fr, bg="#f0f0f0", height=300, width=300)
+            self._canvas.grid(row=0, column=0, sticky=tk.NSEW)
+        except Exception as e:
+            print(f"Error building structure panel: {e}")
+
+        try:
+            # Right panel: Metadata
+            right_fr = ttk.LabelFrame(content_fr, text=" Metadata ", padding=4)
+            right_fr.grid(row=0, column=2, sticky=tk.NSEW)
+            right_fr.columnconfigure(0, weight=1)
+            right_fr.rowconfigure(1, weight=1)
+
+            self._info_label = ttk.Label(right_fr, text="No file loaded", foreground="#666666")
+            self._info_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
+
+            self._meta_text = scrolledtext.ScrolledText(right_fr, height=15, width=40,
+                                                         font=("Courier", 9),
+                                                         bg="#f8f8f8", fg="#000000")
+            self._meta_text.grid(row=1, column=0, sticky=tk.NSEW)
+            self._meta_text.configure(state="disabled")
+        except Exception as e:
+            print(f"Error building metadata panel: {e}")
+
+        try:
+            # Bottom panel: Mass Spectrum Plot
+            spec_fr = ttk.LabelFrame(content_fr, text=" Mass Spectrum ", padding=4)
+            spec_fr.grid(row=1, column=0, columnspan=3, sticky=tk.NSEW, pady=(4, 0))
+            spec_fr.columnconfigure(0, weight=1)
+            spec_fr.rowconfigure(0, weight=1)
+
+            self._spec_canvas_frame = ttk.Frame(spec_fr)
+            self._spec_canvas_frame.grid(row=0, column=0, sticky=tk.NSEW)
+            self._spec_canvas_frame.columnconfigure(0, weight=1)
+            self._spec_canvas_frame.rowconfigure(0, weight=1)
+        except Exception as e:
+            print(f"Error building mass spectrum panel: {e}")
+
+        # ── Navigation Controls ─────────────────────────────────────────────
+        try:
+            nav_fr = ttk.Frame(self)
+            nav_fr.pack(fill=tk.X)
+
+            # Navigation buttons
+            ttk.Button(nav_fr, text="◀ Previous", command=self._prev_record).pack(
+                side=tk.LEFT, padx=(0, 4))
+            ttk.Button(nav_fr, text="Next ▶", command=self._next_record).pack(
+                side=tk.LEFT, padx=(0, 4))
+
+            # Jump to record button
+            ttk.Button(nav_fr, text="Jump to…", command=self._jump_to_record).pack(
+                side=tk.LEFT, padx=(0, 4))
+
+            # Search button
+            ttk.Button(nav_fr, text="Search…", command=self._search_compounds).pack(
+                side=tk.LEFT, padx=(0, 2))
+
+            # Separator
+            ttk.Separator(nav_fr, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+
+            # Edit buttons
+            ttk.Button(nav_fr, text="Edit Metadata", command=self._edit_metadata).pack(
+                side=tk.LEFT, padx=(0, 4))
+            ttk.Button(nav_fr, text="Edit Peaks", command=self._edit_mass_spectrum).pack(
+                side=tk.LEFT, padx=(0, 6))
+
+            # Navigation label
+            self._nav_label = ttk.Label(nav_fr, text="", foreground="#666666")
+            self._nav_label.pack(side=tk.LEFT, padx=(0, 6))
+
+            # Filter status label
+            self._filter_label = ttk.Label(nav_fr, text="", foreground="#0066cc")
+            self._filter_label.pack(side=tk.LEFT, padx=(0, 4))
+
+            # Clear filter button
+            self._clear_filter_btn = ttk.Button(nav_fr, text="Clear Filter",
+                                               command=self._clear_filter, state=tk.DISABLED)
+            self._clear_filter_btn.pack(side=tk.LEFT)
+        except Exception as e:
+            print(f"Error building navigation controls: {e}")
+
+        # ── Export Controls ───────────────────────────────────────────────
+        try:
+            export_fr = ttk.Frame(self)
+            export_fr.pack(fill=tk.X, pady=(6, 0))
+
+            ttk.Label(export_fr, text="Export:", font=("Arial", 9)).pack(
+                side=tk.LEFT, padx=(0, 6))
+
+            ttk.Button(export_fr, text="Structure Images", command=self._export_structure_image).pack(
+                side=tk.LEFT, padx=(0, 4))
+            ttk.Button(export_fr, text="CSV Data", command=self._export_csv).pack(
+                side=tk.LEFT, padx=(0, 4))
+            ttk.Button(export_fr, text="Print", command=self._print_record).pack(
+                side=tk.LEFT)
+        except Exception as e:
+            print(f"Error building export controls: {e}")
+
+    def _browse_sdf(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("SDF files", "*.sdf"), ("All files", "*.*")])
+        if path:
+            # Setting the path will trigger the trace callback _on_sdf_path_change
+            # which will call _load_sdf, so we don't need to call it here
+            self._sdf_path.set(path)
+
+    def _on_sdf_path_change(self, var, index, mode) -> None:
+        """Called when the SDF file path changes."""
+        path = self._sdf_path.get()
+        print(f"[DEBUG] _on_sdf_path_change called with path: {path}")
+        if path and path.strip():
+            import os
+            if os.path.isfile(path):
+                print(f"[DEBUG] File exists, loading: {path}")
+                self._load_sdf(path)
+            else:
+                print(f"[DEBUG] File does not exist: {path}")
+
+    def _load_button_clicked(self) -> None:
+        """Handle Load button click."""
+        path = self._sdf_path.get()
+        print(f"[DEBUG] Load button clicked with path: {path}")
+        if path and path.strip():
+            import os
+            if os.path.isfile(path):
+                print(f"[DEBUG] File exists, loading: {path}")
+                self._load_sdf(path)
+
+    def _init_database(self) -> None:
+        """Initialize SQLite database with 4-table schema."""
+        try:
+            self._db_conn = sqlite3.connect(":memory:")
+            self._db_conn.execute("PRAGMA foreign_keys = ON")
+            self._db_cursor = self._db_conn.cursor()
+
+            # Table 1: compounds (main compound data)
+            self._db_cursor.execute("""
+                CREATE TABLE compounds (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    formula TEXT,
+                    molecular_weight REAL,
+                    cas_number TEXT,
+                    iupac_name TEXT,
+                    smiles TEXT,
+                    inchi TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Indexes for common search operations
+            self._db_cursor.execute("CREATE INDEX idx_name ON compounds(name)")
+            self._db_cursor.execute("CREATE INDEX idx_formula ON compounds(formula)")
+            self._db_cursor.execute("CREATE INDEX idx_cas ON compounds(cas_number)")
+
+            # Table 2: metadata (all other SDF fields)
+            self._db_cursor.execute("""
+                CREATE TABLE metadata (
+                    id INTEGER PRIMARY KEY,
+                    compound_id INTEGER,
+                    field_name TEXT,
+                    field_value TEXT,
+                    FOREIGN KEY(compound_id) REFERENCES compounds(id)
+                )
+            """)
+            self._db_cursor.execute("CREATE INDEX idx_compound_id ON metadata(compound_id)")
+
+            # Table 3: mass_spectrum (peak data)
+            self._db_cursor.execute("""
+                CREATE TABLE mass_spectrum (
+                    id INTEGER PRIMARY KEY,
+                    compound_id INTEGER,
+                    mz REAL,
+                    intensity REAL,
+                    base_peak INTEGER,
+                    FOREIGN KEY(compound_id) REFERENCES compounds(id)
+                )
+            """)
+            self._db_cursor.execute("CREATE INDEX idx_compound_spectrum ON mass_spectrum(compound_id)")
+            self._db_cursor.execute("CREATE INDEX idx_mz ON mass_spectrum(mz)")
+
+            # Table 4: mol_data (RDKit molecule references)
+            self._db_cursor.execute("""
+                CREATE TABLE mol_data (
+                    compound_id INTEGER PRIMARY KEY,
+                    mol_reference TEXT,
+                    FOREIGN KEY(compound_id) REFERENCES compounds(id)
+                )
+            """)
+
+            self._db_conn.commit()
+            print("[DEBUG] Database initialized with schema")
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize database: {e}")
+            raise
+
+    def _insert_sdf_to_database(self, mol, idx: int, fields: dict) -> None:
+        """Insert SDF record data into database."""
+        try:
+            # Extract key fields
+            name = fields.get("NAME", fields.get("COMPOUND NAME", f"Compound {idx + 1}"))
+            formula = fields.get("FORMULA", "")
+            try:
+                molecular_weight = float(fields.get("MW", 0)) if fields.get("MW") else None
+            except (ValueError, TypeError):
+                molecular_weight = None
+            cas_number = fields.get("CASNO", fields.get("CAS", ""))
+            iupac_name = fields.get("IUPAC_NAME", "")
+            smiles = fields.get("SMILES", "")
+            inchi = fields.get("InChI", "")
+
+            # Insert into compounds table
+            self._db_cursor.execute("""
+                INSERT INTO compounds (name, formula, molecular_weight, cas_number, iupac_name, smiles, inchi)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (name, formula, molecular_weight, cas_number, iupac_name, smiles, inchi))
+
+            compound_id = self._db_cursor.lastrowid
+
+            # Insert other fields into metadata table
+            excluded_fields = {"NAME", "COMPOUND NAME", "FORMULA", "MW", "CASNO", "CAS", "IUPAC_NAME", "SMILES", "InChI"}
+            for field_name, field_value in fields.items():
+                if field_name not in excluded_fields and field_value:
+                    self._db_cursor.execute("""
+                        INSERT INTO metadata (compound_id, field_name, field_value)
+                        VALUES (?, ?, ?)
+                    """, (compound_id, field_name, str(field_value)))
+
+            # Parse and insert mass spectrum peaks if available
+            peaks_field = fields.get("Num Peaks", fields.get("PEAKS", ""))
+            if peaks_field:
+                try:
+                    peaks = self._parse_peaks_from_field(peaks_field)
+                    for mz, intensity in peaks:
+                        self._db_cursor.execute("""
+                            INSERT INTO mass_spectrum (compound_id, mz, intensity)
+                            VALUES (?, ?, ?)
+                        """, (compound_id, mz, intensity))
+                except Exception as e:
+                    print(f"[WARNING] Could not parse peaks for compound {idx}: {e}")
+
+            # Store mol reference in mol_data (keep molecule object in memory via _records)
+            self._db_cursor.execute("""
+                INSERT INTO mol_data (compound_id, mol_reference)
+                VALUES (?, ?)
+            """, (compound_id, f"mol_{idx}"))
+
+            self._db_conn.commit()
+        except Exception as e:
+            print(f"[ERROR] Failed to insert record {idx} into database: {e}")
+            raise
+
+    def _parse_peaks_from_field(self, peaks_str: str) -> list:
+        """Parse peaks string into (m/z, intensity) tuples."""
+        peaks = []
+        if not peaks_str:
+            return peaks
+
+        try:
+            # Handle formats like "50 287; 51 144; ..." or "50,287;51,144;..."
+            parts = str(peaks_str).split(";")
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                # Try space-separated first
+                if " " in part:
+                    mz_str, intensity_str = part.rsplit(" ", 1)
+                elif "," in part:
+                    mz_str, intensity_str = part.split(",", 1)
+                else:
+                    continue
+                try:
+                    mz = float(mz_str.strip())
+                    intensity = float(intensity_str.strip())
+                    peaks.append((mz, intensity))
+                except ValueError:
+                    continue
+        except Exception as e:
+            print(f"[WARNING] Error parsing peaks: {e}")
+
+        return peaks
+
+    def _load_sdf(self, path: str) -> None:
+        """Parse SDF file and extract records."""
+        try:
+            print(f"[DEBUG] Loading SDF: {path}")
+            
+            if not _HAS_RDKIT:
+                print("[ERROR] RDKit not available")
+                messagebox.showerror("Error", 
+                    "RDKit is required to load SDF files.\n\n"
+                    "Go to Packages tab and install 'rdkit'.")
+                return
+
+            from rdkit import Chem
+            self._records = []
+            self._current_idx = 0
+            print("[DEBUG] RDKit imported")
+
+            # Initialize database
+            print("[DEBUG] Initializing database...")
+            self._init_database()
+            self._current_query_results = []
+
+            # Try to parse with RDKit
+            try:
+                print(f"[DEBUG] Parsing SDF file...")
+                suppl = Chem.SDMolSupplier(str(path), removeHs=False, sanitize=False)
+                print(f"[DEBUG] SDF parsed, {len(suppl) if suppl else 0} molecules found")
+            except Exception as parse_err:
+                print(f"[ERROR] Parse error: {parse_err}")
+                import traceback
+                traceback.print_exc()
+                messagebox.showerror("Parse Error",
+                    f"Could not parse SDF file:\n{str(parse_err)[:200]}")
+                return
+
+            if suppl is None or len(suppl) == 0:
+                print("[ERROR] SDF empty or unreadable")
+                messagebox.showerror("Error",
+                    "SDF file is empty or could not be read.")
+                return
+
+            # Extract molecules and their properties
+            print("[DEBUG] Extracting molecules...")
+            for idx, mol in enumerate(suppl):
+                try:
+                    fields = mol.GetPropsAsDict() if mol else {}
+                    # Insert into database
+                    self._insert_sdf_to_database(mol, idx, fields)
+                    # Keep record in memory for mol object reference
+                    record = {
+                        "mol": mol,
+                        "fields": fields
+                    }
+                    self._records.append(record)
+                except Exception as mol_err:
+                    print(f"Warning: Could not process molecule {idx}: {mol_err}")
+                    # Still add empty record so indexing works
+                    self._records.append({"mol": None, "fields": {}})
+
+            if not self._records:
+                print("[ERROR] No valid molecules found")
+                messagebox.showerror("Error", "No valid molecules found in SDF.")
+                return
+
+            print(f"[DEBUG] Successfully loaded {len(self._records)} records")
+            # Populate compound tree
+            print("[DEBUG] About to populate compound list...")
+            self._populate_compound_list()
+            print("[DEBUG] Compound list populated, showing first record...")
+            self._show_record(0, highlight_in_tree=True)
+            print("[DEBUG] First record shown, updating nav label...")
+            self._update_nav_label()
+            print("[DEBUG] SDF loaded and displayed - loading complete!")
+
+        except Exception as e:
+            print(f"[ERROR] Exception in _load_sdf: {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to load SDF:\n{str(e)[:300]}")
+
+    def _populate_compound_list(self) -> None:
+        """Populate the compound list with all records from database."""
+        print("[DEBUG] _populate_compound_list called")
+        if not self._compound_tree:
+            print("[ERROR] _compound_tree is None!")
+            return
+
+        print(f"[DEBUG] _compound_tree exists: {self._compound_tree}")
+        try:
+            # Clear existing items
+            print("[DEBUG] Clearing existing items...")
+            for item in self._compound_tree.get_children():
+                self._compound_tree.delete(item)
+            print("[DEBUG] Cleared existing items")
+
+            # Query database for compounds (or use current query results if filtered)
+            if self._current_query_results:
+                results = self._current_query_results
+            else:
+                # Get all compounds from database
+                results = self._db_cursor.execute(
+                    "SELECT id, name FROM compounds ORDER BY id"
+                ).fetchall()
+
+            print(f"[DEBUG] Adding {len(results)} records to tree...")
+            for display_idx, (record_id, name) in enumerate(results):
+                try:
+                    print(f"[DEBUG] Inserting record {record_id}")
+                    # Truncate long names
+                    name = str(name)[:60] if name else f"Compound {display_idx + 1}"
+                    display_text = f"{display_idx + 1}. {name}"
+                    print(f"[DEBUG] Inserting with text: {display_text}")
+                    # Use record_id for tree item ID (will convert to idx in _on_compound_selected)
+                    self._compound_tree.insert("", tk.END, iid=str(record_id), text=display_text)
+                    print(f"[DEBUG] Successfully inserted record {record_id}")
+                except Exception as e:
+                    print(f"Warning: Could not add record {record_id} to list: {e}")
+        except Exception as e:
+            print(f"Error populating compound list: {e}")
+
+    def _on_compound_selected(self, event) -> None:
+        """Handle compound selection from the list."""
+        if not self._compound_tree:
+            return
+
+        try:
+            selection = self._compound_tree.selection()
+            if selection:
+                # Tree item ID is record_id (1-based), convert to array index (0-based)
+                record_id = int(selection[0])
+                idx = record_id - 1
+                self._show_record(idx)
+                self._update_nav_label()
+        except (ValueError, IndexError, AttributeError):
+            pass
+
+    def _show_record(self, idx: int, highlight_in_tree: bool = False) -> None:
+        """Display record at given index.
+
+        Args:
+            idx: Record index to display
+            highlight_in_tree: If True, highlight this record in the tree. Only set True
+                              when initially loading (to avoid infinite loop from tree selection events).
+        """
+        print(f"[DEBUG] _show_record called with idx={idx}, highlight_in_tree={highlight_in_tree}")
+        if not self._records or idx < 0 or idx >= len(self._records):
+            print(f"[ERROR] Invalid index: {idx}, records: {len(self._records) if self._records else 0}")
+            return
+
+        print(f"[DEBUG] Setting current index to {idx}")
+        self._current_idx = idx
+        record = self._records[idx]
+        mol = record.get("mol")
+        fields = record.get("fields", {})
+        print(f"[DEBUG] Got record data for index {idx}")
+
+        # Load record data from database
+        try:
+            compound = self._db_cursor.execute(
+                "SELECT name, formula, molecular_weight, cas_number, iupac_name, smiles, inchi "
+                "FROM compounds WHERE id = ?", (idx,)
+            ).fetchone()
+
+            if compound:
+                db_name, db_formula, db_mw, db_cas, db_iupac, db_smiles, db_inchi = compound
+                # Load metadata from database
+                metadata_rows = self._db_cursor.execute(
+                    "SELECT field_name, field_value FROM metadata WHERE compound_id = ? "
+                    "ORDER BY field_name", (idx,)
+                ).fetchall()
+                db_metadata = {row[0]: row[1] for row in metadata_rows}
+                # Merge database data with fields (database takes precedence)
+                fields = {**fields, **db_metadata}
+                if db_name:
+                    fields["NAME"] = db_name
+                if db_formula:
+                    fields["FORMULA"] = db_formula
+                if db_mw:
+                    fields["MW"] = db_mw
+                if db_cas:
+                    fields["CASNO"] = db_cas
+                if db_iupac:
+                    fields["IUPAC_NAME"] = db_iupac
+                if db_smiles:
+                    fields["SMILES"] = db_smiles
+                if db_inchi:
+                    fields["InChI"] = db_inchi
+        except Exception as e:
+            print(f"[WARNING] Could not load record from database: {e}")
+
+        # Update structure image
+        if not self._canvas:
+            print("[ERROR] _canvas is None!")
+            return
+
+        print("[DEBUG] Canvas exists, updating structure...")
+
+        self._canvas.delete("all")
+        if mol and _HAS_RDKIT:
+            try:
+                from rdkit.Chem import Draw
+                from PIL import ImageTk
+                img = Draw.MolToImage(mol, size=(300, 300))
+                self._photo = ImageTk.PhotoImage(img)
+                self._canvas.create_image(150, 150, image=self._photo)
+            except ImportError:
+                self._canvas.create_text(150, 150, text="PIL/Pillow not installed",
+                                        fill="#cc0000", font=("Arial", 9))
+            except Exception as e:
+                self._canvas.create_text(150, 150, text=f"Render error",
+                                        fill="#999999", font=("Arial", 9))
+        else:
+            text = "No structure" if not mol else "RDKit not available"
+            self._canvas.create_text(150, 150, text=text, fill="#999999",
+                                    font=("Arial", 10))
+
+        # Update metadata text
+        if self._meta_text:
+            try:
+                self._meta_text.configure(state="normal")
+                self._meta_text.delete("1.0", tk.END)
+
+                # Display name and basic info
+                name = fields.get("NAME", fields.get("COMPOUND NAME", "Unknown"))
+                formula = fields.get("FORMULA", "—")
+                mw = fields.get("MW", fields.get("MONOISOTOPIC MW", "—"))
+
+                info = f"Name: {name}\nFormula: {formula}\nMW: {mw}\n\n"
+                info += "─" * 40 + "\n\n"
+
+                # Display all metadata fields
+                for key in sorted(fields.keys()):
+                    val = str(fields[key])[:100]  # Limit display length
+                    info += f"{key}: {val}\n"
+
+                self._meta_text.insert("1.0", info)
+                self._meta_text.configure(state="disabled")
+            except Exception as e:
+                print(f"Error updating metadata: {e}")
+
+        # Plot mass spectrum
+        if _HAS_MATPLOTLIB and fields:
+            self._plot_mass_spectrum(fields)
+        elif self._spec_canvas_frame:
+            # Show placeholder if matplotlib not available
+            for widget in self._spec_canvas_frame.winfo_children():
+                widget.destroy()
+            msg = "Matplotlib not installed" if not _HAS_MATPLOTLIB else "No mass spectrum data"
+            placeholder = ttk.Label(self._spec_canvas_frame, text=msg,
+                                   foreground="#999999", font=("Arial", 10))
+            placeholder.pack(fill=tk.BOTH, expand=True)
+
+        # Highlight current record in compound list (only when initially loading)
+        # This prevents infinite loops from tree selection events
+        if highlight_in_tree and self._compound_tree:
+            try:
+                # Tree item ID is record_id (1-based), convert from array index
+                record_id = str(idx + 1)
+                self._compound_tree.selection_set(record_id)
+                self._compound_tree.see(record_id)
+            except Exception as e:
+                print(f"Warning: Could not highlight compound {idx}: {e}")
+
+        # Update info label
+        if self._info_label:
+            try:
+                self._info_label.config(
+                    text=f"Record {idx + 1} of {len(self._records)}")
+            except Exception as e:
+                print(f"Error updating info label: {e}")
+
+    def _plot_mass_spectrum(self, fields: dict) -> None:
+        """Plot mass spectral peaks if available."""
+        # Clear previous canvas
+        for widget in self._spec_canvas_frame.winfo_children():
+            widget.destroy()
+
+        # Try to find mass spectral peaks in various field names
+        peaks_data = None
+        peaks_candidates = ["MASS SPECTRAL PEAKS", "MASS SPECTRUM", "PEAKS", "MS PEAKS"]
+        
+        for candidate in peaks_candidates:
+            for key in fields.keys():
+                if candidate.lower() in key.lower():
+                    peaks_data = fields[key]
+                    break
+            if peaks_data:
+                break
+
+        if not peaks_data or not _HAS_MATPLOTLIB:
+            # Show placeholder if no data or matplotlib not available
+            msg = "No mass spectrum data" if not peaks_data else "Matplotlib not installed"
+            placeholder = ttk.Label(self._spec_canvas_frame, text=msg,
+                                   foreground="#999999", font=("Arial", 10))
+            placeholder.pack(fill=tk.BOTH, expand=True)
+            return
+
+        try:
+            # Parse peaks data
+            mz_values, intensity_values = self._parse_peaks(peaks_data)
+
+            if not mz_values:
+                placeholder = ttk.Label(self._spec_canvas_frame, text="Could not parse peaks",
+                                       foreground="#999999", font=("Arial", 10))
+                placeholder.pack(fill=tk.BOTH, expand=True)
+                return
+
+            # Create matplotlib figure
+            fig = Figure(figsize=(12, 3), dpi=100)
+            ax = fig.add_subplot(111)
+
+            # Plot as bar chart
+            ax.bar(mz_values, intensity_values, width=0.8, color="#0078D4", alpha=0.7)
+            ax.set_xlabel("m/z", fontsize=10)
+            ax.set_ylabel("Intensity", fontsize=10)
+            ax.set_title("Mass Spectrum", fontsize=11, fontweight="bold")
+            ax.grid(axis="y", alpha=0.3)
+            fig.tight_layout()
+
+            # Embed in tkinter
+            canvas = FigureCanvasTkAgg(fig, master=self._spec_canvas_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        except Exception as e:
+            error_label = ttk.Label(self._spec_canvas_frame,
+                                   text=f"Error plotting spectrum: {str(e)[:50]}",
+                                   foreground="#cc0000", font=("Arial", 9))
+            error_label.pack(fill=tk.BOTH, expand=True)
+
+    def _parse_peaks(self, peaks_str: str) -> tuple:
+        """
+        Parse mass spectral peaks from various formats.
+        Common formats:
+          - "50 287; 51 144; 52 9" (semicolon-separated m/z intensity pairs)
+          - "50 287\n51 144\n52 9" (newline-separated)
+          - Space-separated list of alternating m/z and intensity values
+        """
+        mz_values = []
+        intensity_values = []
+
+        try:
+            # Remove extra whitespace and newlines
+            peaks_str = str(peaks_str).strip()
+
+            # Try semicolon-separated format
+            if ";" in peaks_str:
+                pairs = peaks_str.split(";")
+                for pair in pairs:
+                    parts = pair.strip().split()
+                    if len(parts) >= 2:
+                        try:
+                            mz = float(parts[0])
+                            intensity = float(parts[1])
+                            mz_values.append(mz)
+                            intensity_values.append(intensity)
+                        except ValueError:
+                            continue
+
+            # Try newline-separated format
+            elif "\n" in peaks_str:
+                lines = peaks_str.split("\n")
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        try:
+                            mz = float(parts[0])
+                            intensity = float(parts[1])
+                            mz_values.append(mz)
+                            intensity_values.append(intensity)
+                        except ValueError:
+                            continue
+
+            # Try space-separated format (alternating m/z intensity)
+            else:
+                parts = peaks_str.split()
+                for i in range(0, len(parts) - 1, 2):
+                    try:
+                        mz = float(parts[i])
+                        intensity = float(parts[i + 1])
+                        mz_values.append(mz)
+                        intensity_values.append(intensity)
+                    except (ValueError, IndexError):
+                        continue
+
+        except Exception:
+            pass
+
+        return mz_values, intensity_values
+
+    def _jump_to_record(self) -> None:
+        """Jump to a specific record by index."""
+        if not self._records:
+            messagebox.showwarning("No Data", "No SDF file loaded.")
+            return
+
+        # Create dialog
+        dialog = tk.Toplevel(self)
+        dialog.title("Jump to Record")
+        dialog.geometry("300x120")
+        dialog.resizable(False, False)
+
+        ttk.Label(dialog, text="Record number (1 to {0}):".format(len(self._records))).pack(
+            pady=10)
+
+        # Spinbox for record selection
+        spinbox_var = tk.IntVar(value=self._current_idx + 1)
+        spinbox = ttk.Spinbox(dialog, from_=1, to=len(self._records),
+                            textvariable=spinbox_var, width=10)
+        spinbox.pack(pady=5)
+        spinbox.focus()
+
+        def jump():
+            try:
+                idx = spinbox_var.get() - 1
+                if 0 <= idx < len(self._records):
+                    self._show_record(idx, highlight_in_tree=True)
+                    self._update_nav_label()
+                    dialog.destroy()
+                else:
+                    messagebox.showerror("Invalid", f"Please enter a number between 1 and {len(self._records)}")
+            except ValueError:
+                messagebox.showerror("Invalid", "Please enter a valid number")
+
+        # Buttons
+        btn_fr = ttk.Frame(dialog)
+        btn_fr.pack(pady=10)
+        ttk.Button(btn_fr, text="Go", command=jump).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        # Allow Enter to jump
+        dialog.bind("<Return>", lambda e: jump())
+
+    def _search_compounds(self) -> None:
+        """Open search dialog to find compounds by name."""
+        if not self._db_conn:
+            messagebox.showwarning("No Data", "No SDF file loaded.")
+            return
+
+        # Create dialog
+        dialog = tk.Toplevel(self)
+        dialog.title("Search Compounds")
+        dialog.geometry("350x150")
+        dialog.resizable(False, False)
+
+        ttk.Label(dialog, text="Search by compound name (case-insensitive):").pack(
+            pady=10, padx=10)
+
+        # Search entry
+        search_var = tk.StringVar()
+        entry = ttk.Entry(dialog, textvariable=search_var, width=40)
+        entry.pack(pady=5, padx=10)
+        entry.focus()
+
+        result_label = ttk.Label(dialog, text="", foreground="#666666")
+        result_label.pack(pady=5)
+
+        def search():
+            search_term = search_var.get().strip()
+            if not search_term:
+                messagebox.showwarning("Empty", "Please enter a search term")
+                return
+
+            try:
+                # Query database for matching compounds
+                query = "SELECT id, name FROM compounds WHERE LOWER(name) LIKE LOWER('%' || ? || '%') ORDER BY id"
+                results = self._db_cursor.execute(query, (search_term,)).fetchall()
+
+                if results:
+                    self._current_query_results = results
+                    total = self._db_cursor.execute("SELECT COUNT(*) FROM compounds").fetchone()[0]
+                    result_label.config(
+                        text=f"Found {len(results)} of {total} compounds",
+                        foreground="#0066cc"
+                    )
+                    # Update filter button and label
+                    self._clear_filter_btn.config(state=tk.NORMAL)
+                    self._filter_label.config(text=f"Filtered: {len(results)} of {total}")
+                    # Populate tree with results
+                    self._populate_compound_list()
+                    # Show first result
+                    if results:
+                        self._show_record(results[0][0] - 1, highlight_in_tree=True)
+                        self._update_nav_label()
+                    dialog.destroy()
+                else:
+                    result_label.config(text="No matches found", foreground="#cc0000")
+            except Exception as e:
+                messagebox.showerror("Search Error", f"Search failed: {e}")
+
+        # Buttons
+        btn_fr = ttk.Frame(dialog)
+        btn_fr.pack(pady=10)
+        ttk.Button(btn_fr, text="Search", command=search).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        # Allow Enter to search
+        dialog.bind("<Return>", lambda e: search())
+
+    def _clear_filter(self) -> None:
+        """Clear current filter and show all records."""
+        self._current_query_results = []
+        self._clear_filter_btn.config(state=tk.DISABLED)
+        self._filter_label.config(text="")
+        self._populate_compound_list()
+        if self._records:
+            self._show_record(0, highlight_in_tree=True)
+            self._update_nav_label()
+
+    def _edit_metadata(self) -> None:
+        """Open metadata editor dialog for current record."""
+        if not self._records or self._current_idx >= len(self._records):
+            messagebox.showwarning("No Record", "Please load an SDF file and select a record first.")
+            return
+
+        record_id = self._current_idx + 1
+
+        # Create dialog window
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Edit Metadata - Record {record_id}")
+        dialog.geometry("500x400")
+
+        # Load metadata from database
+        try:
+            metadata_rows = self._db_cursor.execute(
+                "SELECT field_name, field_value FROM metadata WHERE compound_id = ? ORDER BY field_name",
+                (record_id,)
+            ).fetchall()
+            metadata_dict = {row[0]: row[1] for row in metadata_rows}
+
+            # Also add main compound fields
+            compound_row = self._db_cursor.execute(
+                "SELECT name, formula, molecular_weight, cas_number, iupac_name, smiles, inchi FROM compounds WHERE id = ?",
+                (record_id,)
+            ).fetchone()
+
+            if compound_row:
+                metadata_dict.update({
+                    "NAME": compound_row[0],
+                    "FORMULA": compound_row[1],
+                    "MW": compound_row[2],
+                    "CASNO": compound_row[3],
+                    "IUPAC_NAME": compound_row[4],
+                    "SMILES": compound_row[5],
+                    "InChI": compound_row[6],
+                })
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load metadata: {e}")
+            dialog.destroy()
+            return
+
+        # Create Treeview for metadata
+        ttk.Label(dialog, text="Field Name | Value", font=("Arial", 9, "bold")).pack(
+            fill=tk.X, padx=5, pady=(5, 2))
+
+        tree_fr = ttk.Frame(dialog)
+        tree_fr.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_fr, orient=tk.VERTICAL)
+        hsb = ttk.Scrollbar(tree_fr, orient=tk.HORIZONTAL)
+
+        meta_tree = ttk.Treeview(tree_fr, columns=("Value",), show="tree headings",
+                                 yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.config(command=meta_tree.yview)
+        hsb.config(command=meta_tree.xview)
+
+        meta_tree.column("#0", width=150, heading="Field Name")
+        meta_tree.column("Value", width=320, heading="Value")
+
+        # Populate tree with metadata
+        item_map = {}  # Map tree item ID to field name
+        for idx, (field_name, field_value) in enumerate(sorted(metadata_dict.items())):
+            item_id = meta_tree.insert("", tk.END, text=field_name, values=(field_value,))
+            item_map[item_id] = field_name
+
+        meta_tree.grid(row=0, column=0, sticky=tk.NSEW)
+        vsb.grid(row=0, column=1, sticky=tk.NS)
+        hsb.grid(row=1, column=0, sticky=tk.EW)
+        tree_fr.columnconfigure(0, weight=1)
+        tree_fr.rowconfigure(0, weight=1)
+
+        # Track changes
+        changes = {"modified": {}, "deleted": set(), "added": {}}
+
+        def on_double_click(event):
+            """Edit cell on double-click."""
+            item = meta_tree.selection()[0]
+            field_name = item_map[item]
+            col = meta_tree.identify_column(event.x)
+
+            if col == "Value":
+                # Edit value
+                current_value = meta_tree.item(item, "values")[0]
+                edit_dialog = tk.Toplevel(dialog)
+                edit_dialog.title(f"Edit: {field_name}")
+                edit_dialog.geometry("400x150")
+
+                ttk.Label(edit_dialog, text=f"Field: {field_name}").pack(padx=10, pady=5)
+                value_text = scrolledtext.ScrolledText(edit_dialog, height=5, width=45)
+                value_text.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
+                value_text.insert("1.0", str(current_value) if current_value else "")
+                value_text.focus()
+
+                def save_value():
+                    new_value = value_text.get("1.0", tk.END).strip()
+                    meta_tree.item(item, values=(new_value,))
+                    changes["modified"][field_name] = new_value
+                    edit_dialog.destroy()
+
+                ttk.Button(edit_dialog, text="Save", command=save_value).pack(side=tk.LEFT, padx=5, pady=5)
+                ttk.Button(edit_dialog, text="Cancel", command=edit_dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        meta_tree.bind("<Double-1>", on_double_click)
+
+        # Buttons
+        btn_fr = ttk.Frame(dialog)
+        btn_fr.pack(fill=tk.X, padx=5, pady=5)
+
+        def add_field():
+            """Add new metadata field."""
+            add_dialog = tk.Toplevel(dialog)
+            add_dialog.title("Add Field")
+            add_dialog.geometry("350x150")
+
+            ttk.Label(add_dialog, text="Field Name:").pack(padx=10, pady=5)
+            name_entry = ttk.Entry(add_dialog)
+            name_entry.pack(padx=10, pady=5, fill=tk.X)
+
+            ttk.Label(add_dialog, text="Value:").pack(padx=10, pady=5)
+            value_entry = ttk.Entry(add_dialog)
+            value_entry.pack(padx=10, pady=5, fill=tk.X)
+
+            def save_new():
+                field_name = name_entry.get().strip()
+                field_value = value_entry.get().strip()
+                if not field_name:
+                    messagebox.showwarning("Empty", "Field name cannot be empty")
+                    return
+                item_id = meta_tree.insert("", tk.END, text=field_name, values=(field_value,))
+                item_map[item_id] = field_name
+                changes["added"][field_name] = field_value
+                add_dialog.destroy()
+
+            ttk.Button(add_dialog, text="Add", command=save_new).pack(side=tk.LEFT, padx=5, pady=5)
+            ttk.Button(add_dialog, text="Cancel", command=add_dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        def delete_field():
+            """Delete selected field."""
+            selection = meta_tree.selection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a field to delete")
+                return
+            item = selection[0]
+            field_name = item_map[item]
+            meta_tree.delete(item)
+            del item_map[item]
+            if field_name not in changes["added"]:
+                changes["deleted"].add(field_name)
+            else:
+                del changes["added"][field_name]
+
+        def save_changes():
+            """Save all metadata changes to database."""
+            try:
+                # UPDATE modified fields
+                for field_name, value in changes["modified"].items():
+                    if field_name in ("NAME", "FORMULA", "MW", "CASNO", "IUPAC_NAME", "SMILES", "InChI"):
+                        # Update in compounds table
+                        col_map = {
+                            "NAME": "name", "FORMULA": "formula", "MW": "molecular_weight",
+                            "CASNO": "cas_number", "IUPAC_NAME": "iupac_name",
+                            "SMILES": "smiles", "InChI": "inchi"
+                        }
+                        col_name = col_map.get(field_name)
+                        if col_name:
+                            self._db_cursor.execute(
+                                f"UPDATE compounds SET {col_name} = ? WHERE id = ?",
+                                (value, record_id)
+                            )
+                    else:
+                        # Update in metadata table
+                        self._db_cursor.execute(
+                            "DELETE FROM metadata WHERE compound_id = ? AND field_name = ?",
+                            (record_id, field_name)
+                        )
+                        self._db_cursor.execute(
+                            "INSERT INTO metadata (compound_id, field_name, field_value) VALUES (?, ?, ?)",
+                            (record_id, field_name, value)
+                        )
+
+                # DELETE removed fields
+                for field_name in changes["deleted"]:
+                    if field_name not in ("NAME", "FORMULA", "MW", "CASNO", "IUPAC_NAME", "SMILES", "InChI"):
+                        self._db_cursor.execute(
+                            "DELETE FROM metadata WHERE compound_id = ? AND field_name = ?",
+                            (record_id, field_name)
+                        )
+
+                # INSERT new fields
+                for field_name, value in changes["added"].items():
+                    if field_name not in ("NAME", "FORMULA", "MW", "CASNO", "IUPAC_NAME", "SMILES", "InChI"):
+                        self._db_cursor.execute(
+                            "INSERT INTO metadata (compound_id, field_name, field_value) VALUES (?, ?, ?)",
+                            (record_id, field_name, value)
+                        )
+
+                self._db_conn.commit()
+                messagebox.showinfo("Success", "Metadata updated successfully")
+                dialog.destroy()
+
+                # Refresh display
+                self._show_record(self._current_idx, highlight_in_tree=False)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save: {e}")
+
+        ttk.Button(btn_fr, text="+ Add Field", command=add_field).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="- Delete Field", command=delete_field).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="Save", command=save_changes).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _edit_mass_spectrum(self) -> None:
+        """Open mass spectrum editor for current record."""
+        if not self._records or self._current_idx >= len(self._records):
+            messagebox.showwarning("No Record", "Please load an SDF file and select a record first.")
+            return
+
+        record_id = self._current_idx + 1
+
+        # Create dialog window
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Edit Mass Spectrum - Record {record_id}")
+        dialog.geometry("600x500")
+
+        # Load peaks from database
+        try:
+            peaks_rows = self._db_cursor.execute(
+                "SELECT mz, intensity, base_peak FROM mass_spectrum WHERE compound_id = ? ORDER BY mz",
+                (record_id,)
+            ).fetchall()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load peaks: {e}")
+            dialog.destroy()
+            return
+
+        # Create Treeview for peaks
+        ttk.Label(dialog, text="m/z | Intensity | Base Peak", font=("Arial", 9, "bold")).pack(
+            fill=tk.X, padx=5, pady=(5, 2))
+
+        tree_fr = ttk.Frame(dialog)
+        tree_fr.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_fr, orient=tk.VERTICAL)
+        hsb = ttk.Scrollbar(tree_fr, orient=tk.HORIZONTAL)
+
+        peaks_tree = ttk.Treeview(tree_fr, columns=("mz", "intensity", "base"),
+                                  show="tree headings", height=15,
+                                  yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.config(command=peaks_tree.yview)
+        hsb.config(command=peaks_tree.xview)
+
+        peaks_tree.column("#0", width=50, heading="Index")
+        peaks_tree.column("mz", width=150, heading="m/z")
+        peaks_tree.column("intensity", width=150, heading="Intensity")
+        peaks_tree.column("base", width=100, heading="Base Peak")
+
+        # Populate tree with peaks
+        item_map = {}  # Map tree item ID to peak index
+        for idx, (mz, intensity, base_peak) in enumerate(peaks_rows):
+            base_mark = "●" if base_peak else "○"
+            item_id = peaks_tree.insert("", tk.END, text=str(idx + 1),
+                                       values=(f"{mz:.4f}", f"{intensity:.2f}", base_mark))
+            item_map[item_id] = {"idx": idx, "mz": mz, "intensity": intensity, "base": base_peak}
+
+        peaks_tree.grid(row=0, column=0, sticky=tk.NSEW)
+        vsb.grid(row=0, column=1, sticky=tk.NS)
+        hsb.grid(row=1, column=0, sticky=tk.EW)
+        tree_fr.columnconfigure(0, weight=1)
+        tree_fr.rowconfigure(0, weight=1)
+
+        # Track changes
+        changes = {"modified": {}, "added": [], "deleted": set()}
+        sort_state = {"column": "mz", "reverse": False}
+
+        def on_double_click(event):
+            """Edit cell on double-click."""
+            if not peaks_tree.selection():
+                return
+            item = peaks_tree.selection()[0]
+            col = peaks_tree.identify_column(event.x)
+
+            if col in ("#1", "#2", "#3"):  # m/z, intensity, or base peak column
+                peak_info = item_map[item]
+                col_idx = int(col[1:]) - 1  # Convert to 0-indexed
+                col_names = ["mz", "intensity", "base"]
+                col_name = col_names[col_idx]
+
+                if col_name == "base":
+                    # Toggle base peak
+                    peak_info["base"] = not peak_info["base"]
+                    base_mark = "●" if peak_info["base"] else "○"
+                    peaks_tree.item(item, values=(f"{peak_info['mz']:.4f}",
+                                                 f"{peak_info['intensity']:.2f}", base_mark))
+                    changes["modified"][item] = peak_info
+                else:
+                    # Edit value
+                    current_value = peaks_tree.item(item, "values")[col_idx]
+                    edit_dialog = tk.Toplevel(dialog)
+                    edit_dialog.title(f"Edit {col_name.upper()}")
+                    edit_dialog.geometry("300x120")
+
+                    ttk.Label(edit_dialog, text=f"Enter {col_name} value:").pack(padx=10, pady=5)
+                    value_entry = ttk.Entry(edit_dialog, width=30)
+                    value_entry.pack(padx=10, pady=5)
+                    value_entry.insert(0, str(current_value))
+                    value_entry.focus()
+                    value_entry.select_range(0, tk.END)
+
+                    def save_value():
+                        try:
+                            if col_name == "mz":
+                                new_val = float(value_entry.get())
+                                if new_val <= 0:
+                                    messagebox.showerror("Invalid", "m/z must be > 0")
+                                    return
+                                peak_info["mz"] = new_val
+                            else:  # intensity
+                                new_val = float(value_entry.get())
+                                if new_val < 0:
+                                    messagebox.showerror("Invalid", "Intensity cannot be negative")
+                                    return
+                                peak_info["intensity"] = new_val
+
+                            peaks_tree.item(item, values=(f"{peak_info['mz']:.4f}",
+                                                         f"{peak_info['intensity']:.2f}",
+                                                         "●" if peak_info["base"] else "○"))
+                            changes["modified"][item] = peak_info
+                            edit_dialog.destroy()
+                        except ValueError:
+                            messagebox.showerror("Invalid", "Please enter a valid number")
+
+                    ttk.Button(edit_dialog, text="Save", command=save_value).pack(
+                        side=tk.LEFT, padx=5, pady=5)
+                    ttk.Button(edit_dialog, text="Cancel", command=edit_dialog.destroy).pack(
+                        side=tk.LEFT, padx=5)
+
+        peaks_tree.bind("<Double-1>", on_double_click)
+
+        # Sorting
+        def sort_by_column(col):
+            """Sort tree by column."""
+            reverse = sort_state["column"] == col and not sort_state["reverse"]
+            sort_state["column"] = col
+            sort_state["reverse"] = reverse
+
+            # Get all items with their data
+            items = []
+            for item_id in peaks_tree.get_children():
+                peak_info = item_map[item_id]
+                if col == "mz":
+                    sort_key = peak_info["mz"]
+                else:  # intensity
+                    sort_key = peak_info["intensity"]
+                items.append((sort_key, item_id, peak_info))
+
+            # Sort and rebuild tree
+            items.sort(key=lambda x: x[0], reverse=reverse)
+            for idx, (_, item_id, _) in enumerate(items):
+                peaks_tree.move(item_id, "", idx)
+
+        peaks_tree.heading("mz", command=lambda: sort_by_column("mz"))
+        peaks_tree.heading("intensity", command=lambda: sort_by_column("intensity"))
+
+        # Buttons
+        btn_fr = ttk.Frame(dialog)
+        btn_fr.pack(fill=tk.X, padx=5, pady=5)
+
+        def add_peak():
+            """Add new peak."""
+            add_dialog = tk.Toplevel(dialog)
+            add_dialog.title("Add Peak")
+            add_dialog.geometry("300x180")
+
+            ttk.Label(add_dialog, text="m/z:").pack(padx=10, pady=5)
+            mz_entry = ttk.Entry(add_dialog)
+            mz_entry.pack(padx=10, pady=5, fill=tk.X)
+
+            ttk.Label(add_dialog, text="Intensity:").pack(padx=10, pady=5)
+            int_entry = ttk.Entry(add_dialog)
+            int_entry.pack(padx=10, pady=5, fill=tk.X)
+
+            base_var = tk.BooleanVar()
+            ttk.Checkbutton(add_dialog, text="Base Peak", variable=base_var).pack(
+                padx=10, pady=5, anchor=tk.W)
+
+            def save_new():
+                try:
+                    mz = float(mz_entry.get())
+                    intensity = float(int_entry.get())
+                    if mz <= 0:
+                        messagebox.showerror("Invalid", "m/z must be > 0")
+                        return
+                    if intensity < 0:
+                        messagebox.showerror("Invalid", "Intensity cannot be negative")
+                        return
+
+                    next_idx = len(peaks_tree.get_children())
+                    item_id = peaks_tree.insert("", tk.END, text=str(next_idx + 1),
+                                               values=(f"{mz:.4f}", f"{intensity:.2f}",
+                                                      "●" if base_var.get() else "○"))
+                    item_map[item_id] = {"idx": next_idx, "mz": mz, "intensity": intensity,
+                                        "base": base_var.get()}
+                    changes["added"].append(item_id)
+                    add_dialog.destroy()
+                except ValueError:
+                    messagebox.showerror("Invalid", "Please enter valid numbers")
+
+            ttk.Button(add_dialog, text="Add", command=save_new).pack(side=tk.LEFT, padx=5, pady=5)
+            ttk.Button(add_dialog, text="Cancel", command=add_dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        def delete_peak():
+            """Delete selected peak."""
+            selection = peaks_tree.selection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a peak to delete")
+                return
+            item = selection[0]
+            peaks_tree.delete(item)
+            peak_idx = item_map[item]["idx"]
+            changes["deleted"].add(peak_idx)
+            del item_map[item]
+
+        def save_changes():
+            """Save all changes to database."""
+            try:
+                # Clear existing peaks for this compound
+                self._db_cursor.execute("DELETE FROM mass_spectrum WHERE compound_id = ?", (record_id,))
+
+                # Insert all current peaks
+                for item_id in peaks_tree.get_children():
+                    peak_info = item_map[item_id]
+                    self._db_cursor.execute(
+                        "INSERT INTO mass_spectrum (compound_id, mz, intensity, base_peak) "
+                        "VALUES (?, ?, ?, ?)",
+                        (record_id, peak_info["mz"], peak_info["intensity"],
+                         1 if peak_info["base"] else 0)
+                    )
+
+                self._db_conn.commit()
+                messagebox.showinfo("Success", "Mass spectrum updated successfully")
+                dialog.destroy()
+
+                # Refresh display - replot the mass spectrum
+                self._show_record(self._current_idx, highlight_in_tree=False)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save: {e}")
+
+        ttk.Button(btn_fr, text="+ Add Peak", command=add_peak).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="- Delete Peak", command=delete_peak).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="Save", command=save_changes).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _export_structure_image(self) -> None:
+        """Export structure image(s) to PNG files."""
+        if not self._records:
+            messagebox.showwarning("No Data", "No SDF file loaded.")
+            return
+
+        if not _HAS_RDKIT:
+            messagebox.showerror("Error", "RDKit is required for image export.")
+            return
+
+        # Dialog: current or all?
+        dialog = tk.Toplevel(self)
+        dialog.title("Export Structure Images")
+        dialog.geometry("300x150")
+        dialog.resizable(False, False)
+
+        scope = tk.StringVar(value="current")
+        ttk.Radiobutton(dialog, text="Current record only", variable=scope, value="current").pack(
+            pady=5, padx=10, anchor=tk.W)
+        ttk.Radiobutton(dialog, text="All records", variable=scope, value="all").pack(
+            pady=5, padx=10, anchor=tk.W)
+        ttk.Radiobutton(dialog, text="Filtered results", variable=scope, value="filtered").pack(
+            pady=5, padx=10, anchor=tk.W)
+
+        def export():
+            save_dir = filedialog.askdirectory(title="Select directory for images")
+            if not save_dir:
+                return
+
+            try:
+                from rdkit.Chem import Draw
+                from PIL import Image
+                count = 0
+
+                if scope.get() == "current":
+                    # Export current record
+                    mol = self._records[self._current_idx].get("mol")
+                    if mol:
+                        record_id = self._current_idx + 1
+                        compound_name = self._db_cursor.execute(
+                            "SELECT name FROM compounds WHERE id = ?", (record_id,)
+                        ).fetchone()[0]
+                        filename = f"{save_dir}/compound_{record_id:04d}_{compound_name[:30]}.png"
+                        img = Draw.MolToImage(mol, size=(800, 600))
+                        img.save(filename)
+                        count = 1
+
+                else:
+                    # Export all or filtered
+                    if scope.get() == "filtered" and self._current_query_results:
+                        results = self._current_query_results
+                    else:
+                        results = self._db_cursor.execute(
+                            "SELECT id, name FROM compounds ORDER BY id"
+                        ).fetchall()
+
+                    for display_idx, (record_id, name) in enumerate(results):
+                        mol = self._records[record_id - 1].get("mol")
+                        if mol:
+                            filename = f"{save_dir}/compound_{record_id:04d}_{name[:30]}.png"
+                            img = Draw.MolToImage(mol, size=(800, 600))
+                            img.save(filename)
+                            count += 1
+
+                messagebox.showinfo("Success", f"Exported {count} structure image(s)")
+                dialog.destroy()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Export failed: {e}")
+
+        btn_fr = ttk.Frame(dialog)
+        btn_fr.pack(pady=10)
+        ttk.Button(btn_fr, text="Export", command=export).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _export_csv(self) -> None:
+        """Export compound data to CSV file."""
+        if not self._records:
+            messagebox.showwarning("No Data", "No SDF file loaded.")
+            return
+
+        # Dialog: current or all or filtered?
+        dialog = tk.Toplevel(self)
+        dialog.title("Export to CSV")
+        dialog.geometry("300x150")
+        dialog.resizable(False, False)
+
+        scope = tk.StringVar(value="all")
+        ttk.Radiobutton(dialog, text="Current record only", variable=scope, value="current").pack(
+            pady=5, padx=10, anchor=tk.W)
+        ttk.Radiobutton(dialog, text="All records", variable=scope, value="all").pack(
+            pady=5, padx=10, anchor=tk.W)
+        ttk.Radiobutton(dialog, text="Filtered results", variable=scope, value="filtered").pack(
+            pady=5, padx=10, anchor=tk.W)
+
+        def export():
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+            if not save_path:
+                return
+
+            try:
+                # Determine which records to export
+                if scope.get() == "current":
+                    record_ids = [self._current_idx + 1]
+                elif scope.get() == "filtered" and self._current_query_results:
+                    record_ids = [r[0] for r in self._current_query_results]
+                else:
+                    record_ids = [r[0] for r in self._db_cursor.execute(
+                        "SELECT id FROM compounds ORDER BY id"
+                    ).fetchall()]
+
+                # Get all field names
+                all_fields = {"id", "name", "formula", "molecular_weight", "cas_number", "iupac_name", "smiles", "inchi"}
+                for row in self._db_cursor.execute(
+                    "SELECT DISTINCT field_name FROM metadata"
+                ).fetchall():
+                    all_fields.add(row[0])
+
+                field_list = sorted(list(all_fields))
+
+                # Write CSV
+                with open(save_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=field_list)
+                    writer.writeheader()
+
+                    for record_id in record_ids:
+                        row = {"id": record_id}
+                        # Get compound fields
+                        compound = self._db_cursor.execute(
+                            "SELECT name, formula, molecular_weight, cas_number, iupac_name, smiles, inchi "
+                            "FROM compounds WHERE id = ?", (record_id,)
+                        ).fetchone()
+                        if compound:
+                            row.update({
+                                "name": compound[0],
+                                "formula": compound[1],
+                                "molecular_weight": compound[2],
+                                "cas_number": compound[3],
+                                "iupac_name": compound[4],
+                                "smiles": compound[5],
+                                "inchi": compound[6],
+                            })
+
+                        # Get metadata fields
+                        metadata = self._db_cursor.execute(
+                            "SELECT field_name, field_value FROM metadata WHERE compound_id = ?",
+                            (record_id,)
+                        ).fetchall()
+                        for field_name, field_value in metadata:
+                            row[field_name] = field_value
+
+                        writer.writerow(row)
+
+                messagebox.showinfo("Success", f"Exported {len(record_ids)} record(s) to CSV")
+                dialog.destroy()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Export failed: {e}")
+
+        btn_fr = ttk.Frame(dialog)
+        btn_fr.pack(pady=10)
+        ttk.Button(btn_fr, text="Export", command=export).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _print_record(self) -> None:
+        """Print record(s) to HTML and open in browser."""
+        if not self._records:
+            messagebox.showwarning("No Data", "No SDF file loaded.")
+            return
+
+        # Dialog: current or all?
+        dialog = tk.Toplevel(self)
+        dialog.title("Print Records")
+        dialog.geometry("300x120")
+        dialog.resizable(False, False)
+
+        scope = tk.StringVar(value="current")
+        ttk.Radiobutton(dialog, text="Current record only", variable=scope, value="current").pack(
+            pady=5, padx=10, anchor=tk.W)
+        ttk.Radiobutton(dialog, text="All records", variable=scope, value="all").pack(
+            pady=5, padx=10, anchor=tk.W)
+
+        def print_records():
+            try:
+                import webbrowser
+                import base64
+                from io import BytesIO
+                import tempfile
+
+                # Determine which records to print
+                if scope.get() == "current":
+                    record_ids = [self._current_idx + 1]
+                else:
+                    record_ids = [r[0] for r in self._db_cursor.execute(
+                        "SELECT id FROM compounds ORDER BY id"
+                    ).fetchall()]
+
+                html = "<html><head><style>"
+                html += "body { font-family: Arial, sans-serif; margin: 20px; }"
+                html += "h2 { color: #333; border-bottom: 2px solid #0066cc; padding-bottom: 5px; }"
+                html += "table { border-collapse: collapse; width: 100%; margin: 10px 0; }"
+                html += "th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }"
+                html += "th { background-color: #f0f0f0; }"
+                html += ".structure { width: 300px; border: 1px solid #ddd; }"
+                html += ".page-break { page-break-after: always; margin: 20px 0; border-top: 2px dashed #ccc; }"
+                html += "</style></head><body>"
+
+                for idx, record_id in enumerate(record_ids):
+                    if idx > 0:
+                        html += "<div class='page-break'></div>"
+
+                    # Get compound data
+                    compound = self._db_cursor.execute(
+                        "SELECT name, formula, molecular_weight FROM compounds WHERE id = ?",
+                        (record_id,)
+                    ).fetchone()
+
+                    if compound:
+                        html += f"<h2>{compound[0]}</h2>"
+                        html += "<table><tr><td>Formula:</td><td>{}</td></tr>".format(compound[1] or "—")
+                        html += "<tr><td>MW:</td><td>{}</td></tr></table>".format(compound[2] or "—")
+
+                    # Add structure image if available
+                    mol = self._records[record_id - 1].get("mol")
+                    if mol and _HAS_RDKIT:
+                        try:
+                            from rdkit.Chem import Draw
+                            img = Draw.MolToImage(mol, size=(300, 300))
+                            buffered = BytesIO()
+                            img.save(buffered, format="PNG")
+                            img_str = base64.b64encode(buffered.getvalue()).decode()
+                            html += f"<img class='structure' src='data:image/png;base64,{img_str}'/>"
+                        except Exception:
+                            pass
+
+                    # Add metadata table
+                    metadata = self._db_cursor.execute(
+                        "SELECT field_name, field_value FROM metadata WHERE compound_id = ? ORDER BY field_name",
+                        (record_id,)
+                    ).fetchall()
+
+                    if metadata:
+                        html += "<table><tr><th>Field</th><th>Value</th></tr>"
+                        for field_name, field_value in metadata:
+                            html += f"<tr><td>{field_name}</td><td>{field_value}</td></tr>"
+                        html += "</table>"
+
+                html += "</body></html>"
+
+                # Save to temp file and open
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as f:
+                    f.write(html)
+                    temp_path = f.name
+
+                webbrowser.open(f"file://{temp_path}")
+                messagebox.showinfo("Success", "Opened in browser for printing")
+                dialog.destroy()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Print failed: {e}")
+
+        btn_fr = ttk.Frame(dialog)
+        btn_fr.pack(pady=10)
+        ttk.Button(btn_fr, text="Print", command=print_records).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+    def _prev_record(self) -> None:
+        if self._records and self._current_idx > 0:
+            self._show_record(self._current_idx - 1)
+            self._update_nav_label()
+
+    def _next_record(self) -> None:
+        if self._records and self._current_idx < len(self._records) - 1:
+            self._show_record(self._current_idx + 1)
+            self._update_nav_label()
+
+    def _update_nav_label(self) -> None:
+        print("[DEBUG] _update_nav_label called")
+        if not self._nav_label:
+            print("[ERROR] _nav_label is None!")
+            return
+
+        print("[DEBUG] _nav_label exists, updating...")
+        try:
+            if self._records:
+                label_text = f"  |  Record {self._current_idx + 1} / {len(self._records)}"
+                print(f"[DEBUG] Setting nav label to: {label_text}")
+                self._nav_label.config(text=label_text)
+                print("[DEBUG] Nav label updated successfully")
+            else:
+                print("[DEBUG] No records, clearing nav label")
+                self._nav_label.config(text="")
+        except Exception as e:
+            print(f"[ERROR] Exception in _update_nav_label: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+# ===========================================================================
+# Tab 5 — Packages
 # ===========================================================================
 
 _PKGS: list[tuple] = [
@@ -1272,12 +3057,18 @@ _PKGS: list[tuple] = [
     ("sdf_enricher", "sdf-enricher",
      "SDF Enricher tab",
      "Fills missing metadata from PubChem, ChEBI, KEGG, HMDB"),
+    ("rdkit",        "rdkit",
+     "SDF Viewer tab (structure visualization)",
+     "Chemical structure rendering; highly recommended"),
+    ("PIL",          "Pillow",
+     "SDF Viewer tab (image display)",
+     "Required for displaying 2D structure images"),
+    ("matplotlib",   "matplotlib",
+     "SDF Viewer mass spectra & workflow diagrams",
+     "Visualize mass spectral peaks and generate workflow images"),
     ("splashpy",     "splashpy",
      "SPLASH hash calculation",
      "Spectral hash for SDF records; optional"),
-    ("matplotlib",   "matplotlib",
-     "Workflow diagram (scripts/generate_workflow_image.py)",
-     "Not needed for fragment calculation"),
     ("pytest",       "pytest",
      "Running the test suite  (dev only)",
      "pip install \"ei-fragment-calculator[dev]\""),
@@ -1518,6 +3309,9 @@ class EIFragmentApp(tk.Tk):
                 font=("Consolas", 10), foreground="#666666", justify=tk.LEFT,
             ).pack(anchor=tk.NW)
             nb.add(ph, text="  SDF Enricher  ")
+
+        viewer_tab = _SDFViewerTab(nb)
+        nb.add(viewer_tab, text="  SDF Viewer  ")
 
         pkg_tab = _PackagesTab(nb)
         nb.add(pkg_tab, text="  Packages  ")
