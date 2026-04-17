@@ -663,21 +663,37 @@ class _CalcTab(ttk.Frame):
     def _build_spectrum_canvas(self, parent: tk.Widget) -> None:
         """Build the spectrum visualization in the upper right pane."""
         try:
+            import matplotlib
+            matplotlib.use('TkAgg')
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
             self._spectrum_fig, self._spectrum_ax = plt.subplots(figsize=(6, 3), dpi=100)
+            self._spectrum_fig.patch.set_facecolor('#f0f0f0')
             self._spectrum_canvas = FigureCanvasTkAgg(self._spectrum_fig, parent)
-            self._spectrum_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            canvas_widget = self._spectrum_canvas.get_tk_widget()
+            canvas_widget.pack(fill=tk.BOTH, expand=True)
 
             # Initial placeholder
+            self._spectrum_ax.clear()
             self._spectrum_ax.text(0.5, 0.5, "Select a compound to view spectrum",
                                    ha="center", va="center", transform=self._spectrum_ax.transAxes,
                                    fontsize=10, color="gray")
-            self._spectrum_fig.canvas.draw()
-        except ImportError:
+            self._spectrum_ax.set_xlim(0, 1)
+            self._spectrum_ax.set_ylim(0, 1)
+            self._spectrum_fig.tight_layout()
+            self._spectrum_canvas.draw()
+        except ImportError as e:
             # Fallback if matplotlib not available
+            print(f"[WARNING] matplotlib not available: {e}")
             ttk.Label(parent, text="matplotlib not installed\n\nInstall with:\npip install matplotlib",
+                      foreground="#cc0000").pack(fill=tk.BOTH, expand=True)
+            self._spectrum_canvas = None
+            self._spectrum_fig = None
+            self._spectrum_ax = None
+        except Exception as e:
+            print(f"[ERROR] Failed to build spectrum canvas: {e}")
+            ttk.Label(parent, text=f"Error initializing spectrum:\n{str(e)}",
                       foreground="#cc0000").pack(fill=tk.BOTH, expand=True)
             self._spectrum_canvas = None
             self._spectrum_fig = None
@@ -763,13 +779,14 @@ class _CalcTab(ttk.Frame):
         try:
             self._spectrum_ax.clear()
             self._spectrum_ax.bar(mz_vals, intensities, color="#0078D4", width=0.8)
-            self._spectrum_ax.set_xlabel("m/z")
-            self._spectrum_ax.set_ylabel("Intensity")
+            self._spectrum_ax.set_xlabel("m/z", fontsize=9)
+            self._spectrum_ax.set_ylabel("Intensity", fontsize=9)
             self._spectrum_ax.grid(True, alpha=0.3, axis="y")
             self._spectrum_fig.tight_layout()
             self._spectrum_canvas.draw()
-        except (AttributeError, RuntimeError, ValueError):
-            pass
+        except (AttributeError, RuntimeError, ValueError) as e:
+            print(f"[ERROR] Failed to render spectrum: {e}")
+            self._clear_spectrum()
 
     def _clear_spectrum(self) -> None:
         """Clear spectrum and show placeholder."""
