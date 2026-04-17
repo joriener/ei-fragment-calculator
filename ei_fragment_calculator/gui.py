@@ -48,6 +48,12 @@ try:
 except ImportError:
     _HAS_RDKIT = False
 
+try:
+    import matplotlib                   # noqa: F401
+    _HAS_MATPLOTLIB = True
+except ImportError:
+    _HAS_MATPLOTLIB = False
+
 # ---------------------------------------------------------------------------
 # Paths — handle both normal installs and PyInstaller-frozen builds.
 # PyInstaller 6+ places data files under  <dist>/_internal/  and sets
