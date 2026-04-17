@@ -1,0 +1,34 @@
+==================================================
+==================================================
+SDF VIEWER TEST
+SDF VIEWER TEST
+==================================================
+==================================================
+[TEST] Importing RDKit...
+[TEST] Importing RDKit...
+[TEST] RDKit imported successfully
+[TEST] RDKit imported successfully
+[TEST] Testing file: D:\Test\STRUSAMP.SDF
+[TEST] Testing file: D:\Test\STRUSAMP.SDF
+[TEST] File exists: True
+[TEST] File exists: True
+[TEST] Creating SDMolSupplier...
+[TEST] Creating SDMolSupplier...
+[TEST] SDMolSupplier created: <rdkit.Chem.rdmolfiles.SDMolSupplier object at 0x0000024AB7A20D60>
+[TEST] SDMolSupplier created: <rdkit.Chem.rdmolfiles.SDMolSupplier object at 0x0000024AB7A20D60>
+[TEST] Number of molecules: 5
+[TEST] Number of molecules: 5
+[TEST] Record 0: mol is NoneType
+[TEST] Record 0: mol is NoneType
+[TEST] Record 1: mol is NoneType
+[TEST] Record 1: mol is NoneType
+[TEST] Record 2: mol is NoneType
+[TEST] Record 2: mol is NoneType
+[TEST] Record 3: mol is NoneType
+[TEST] Record 3: mol is NoneType
+[TEST] Record 4: mol is NoneType
+[TEST] Record 4: mol is NoneType
+[TEST] Test completed successfully!
+[TEST] Test completed successfully!
+==================================================
+==================================================

@@ -2025,9 +2025,10 @@ class _SDFViewerTab(ttk.Frame):
 
         # Load record data from database
         try:
+            record_id = idx + 1  # Database IDs are 1-based
             compound = self._db_cursor.execute(
                 "SELECT name, formula, molecular_weight, cas_number, iupac_name, smiles, inchi "
-                "FROM compounds WHERE id = ?", (idx,)
+                "FROM compounds WHERE id = ?", (record_id,)
             ).fetchone()
 
             if compound:
@@ -2035,7 +2036,7 @@ class _SDFViewerTab(ttk.Frame):
                 # Load metadata from database
                 metadata_rows = self._db_cursor.execute(
                     "SELECT field_name, field_value FROM metadata WHERE compound_id = ? "
-                    "ORDER BY field_name", (idx,)
+                    "ORDER BY field_name", (record_id,)
                 ).fetchall()
                 db_metadata = {row[0]: row[1] for row in metadata_rows}
                 # Merge database data with fields (database takes precedence)

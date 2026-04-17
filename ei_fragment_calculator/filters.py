@@ -488,6 +488,87 @@ def apply_clbr_m2_check(
 
 
 # ---------------------------------------------------------------------------
+# E3: 7 Golden Rules (Kind & Fiehn 2007)
+# ---------------------------------------------------------------------------
+
+def apply_golden_rules(composition: dict) -> tuple[bool, str]:
+    """
+    Apply Kind & Fiehn 2007 heuristic rules for molecular formula validation.
+
+    Rules apply to fragments with ≥5 heavy atoms:
+    - H/C ratio: 0.125–3.1
+    - N/C ratio: 0–1.3
+    - O/C ratio: 0–1.2
+    - S/C ratio: 0–0.8
+    - P/C ratio: 0–0.32
+    - Halogens/C: ≤1.5
+
+    Parameters
+    ----------
+    composition : dict  Elemental composition {element: count}.
+
+    Returns
+    -------
+    tuple[bool, str]  (passed, reason) where reason is empty if passed.
+    """
+    c = composition.get("C", 0)
+    h = composition.get("H", 0)
+    n = composition.get("N", 0)
+    o = composition.get("O", 0)
+    s = composition.get("S", 0)
+    p = composition.get("P", 0)
+    cl = composition.get("Cl", 0)
+    br = composition.get("Br", 0)
+    f = composition.get("F", 0)
+    i = composition.get("I", 0)
+
+    # Count heavy atoms
+    heavy_atoms = c + n + o + s + p + cl + br + f + i
+    if heavy_atoms < 5:
+        # Rules don't apply to small fragments
+        return True, ""
+
+    # H/C ratio: 0.125–3.1
+    if c > 0:
+        hc_ratio = h / c
+        if not (0.125 <= hc_ratio <= 3.1):
+            return False, "H/C ratio {:.3f} outside range 0.125–3.1".format(hc_ratio)
+
+    # N/C ratio: 0–1.3
+    if c > 0:
+        nc_ratio = n / c
+        if not (0 <= nc_ratio <= 1.3):
+            return False, "N/C ratio {:.3f} outside range 0–1.3".format(nc_ratio)
+
+    # O/C ratio: 0–1.2
+    if c > 0:
+        oc_ratio = o / c
+        if not (0 <= oc_ratio <= 1.2):
+            return False, "O/C ratio {:.3f} outside range 0–1.2".format(oc_ratio)
+
+    # S/C ratio: 0–0.8
+    if c > 0:
+        sc_ratio = s / c
+        if not (0 <= sc_ratio <= 0.8):
+            return False, "S/C ratio {:.3f} outside range 0–0.8".format(sc_ratio)
+
+    # P/C ratio: 0–0.32
+    if c > 0:
+        pc_ratio = p / c
+        if not (0 <= pc_ratio <= 0.32):
+            return False, "P/C ratio {:.3f} outside range 0–0.32".format(pc_ratio)
+
+    # Halogens/C ≤ 1.5
+    if c > 0:
+        hal_count = cl + br + f + i
+        hal_ratio = hal_count / c
+        if hal_ratio > 1.5:
+            return False, "Halogens/C ratio {:.3f} exceeds 1.5".format(hal_ratio)
+
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Combined filter runner
 # ---------------------------------------------------------------------------
 
@@ -568,6 +649,12 @@ def run_all_filters(
         details["clbr_m2_check"] = msg if msg else "OK"
         if not passed:
             all_passed = False
+
+    # E3: 7 Golden Rules (always enabled, Kind & Fiehn 2007)
+    passed, msg = apply_golden_rules(composition)
+    details["golden_rules"] = msg if msg else "OK"
+    if not passed:
+        all_passed = False
 
     result = dict(candidate)
     result["filter_passed"]  = all_passed

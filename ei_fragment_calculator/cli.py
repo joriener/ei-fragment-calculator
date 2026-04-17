@@ -43,6 +43,71 @@ from .sdf_writer  import (write_exact_masses_sdf, exact_sdf_path,
                            write_exact_masses_msp, exact_msp_path)
 
 
+# ---------------------------------------------------------------------------
+# D3: Compound class templates and classification
+# ---------------------------------------------------------------------------
+
+def _classify_compound(composition: dict, dbe: float) -> str:
+    """
+    Classify parent compound by formula and DBE into a compound class.
+
+    Parameters
+    ----------
+    composition : dict  Elemental composition {element: count}.
+    dbe         : float Degree of unsaturation.
+
+    Returns
+    -------
+    str  Compound class name (e.g., "aromatic_HC", "ketone", "ester", etc.)
+    """
+    c = composition.get("C", 0)
+    h = composition.get("H", 0)
+    n = composition.get("N", 0)
+    o = composition.get("O", 0)
+    s = composition.get("S", 0)
+
+    if n == 0 and o == 0 and s == 0 and dbe >= 4:
+        return "aromatic_HC"
+    if o == 1 and dbe >= 1:
+        return "ketone"
+    if o == 2 and dbe == 1:
+        return "ester"
+    if n >= 1 and o == 0 and dbe == 0:
+        return "aliphatic_amine"
+    if "Cl" in composition or "Br" in composition:
+        return "halogenated"
+    return "general"
+
+
+# Class templates: mapping of compound class to [(nominal_mz, formula_dict), ...]
+# These represent common molecular ions and stable fragments in each class
+CLASS_TEMPLATES = {
+    "aromatic_HC": [
+        (77, {"C": 6, "H": 5}),   # Phenyl (C6H5+)
+        (79, {"C": 6, "H": 7}),   # Cyclohexadienyl (C6H7+)
+        (91, {"C": 7, "H": 7}),   # Tropylium (C7H7+)
+    ],
+    "ketone": [
+        (43, {"C": 2, "H": 3, "O": 1}),  # CH3CO+ (acetyl)
+        (71, {"C": 4, "H": 7, "O": 1}),  # CH3C3H6O+ (4-carbon ketone base)
+    ],
+    "ester": [
+        (61, {"C": 2, "H": 5, "O": 2}),  # CH3COO-like fragment
+        (73, {"C": 3, "H": 5, "O": 2}),  # Propionate-like
+    ],
+    "aliphatic_amine": [
+        (30, {"C": 1, "H": 4, "N": 1}),  # CH2=NH2+
+        (44, {"C": 2, "H": 6, "N": 1}),  # C2H6N+
+    ],
+    "halogenated": [
+        (35, {"Cl": 1}),           # Cl+
+        (37, {"Cl": 1}),           # 37Cl+
+        (79, {"Br": 1}),           # 79Br+
+        (81, {"Br": 1}),           # 81Br+
+    ],
+}
+
+
 def format_record(
     record: dict,
     tolerance: float,
@@ -179,6 +244,21 @@ def format_record(
         lines.append("Confidence      : yes (M+1/M+2 isotope, neutral-loss, DBE, stable-ion)")
     lines.append("=" * 72)
 
+    # ── E6: Molecular ion confirmation ───────────────────────────────────────
+    parent_nominal_mz = int(round(parent_ion))
+    _m_ion_confirmed = False
+    _adduct_warning = False
+    _m1_m_ratio = 0.0
+
+    # E6: Molecular ion confirmation messages
+    if _m_ion_confirmed:
+        lines.append("[M+\u2022 CONFIRMED] Molecular ion detected in spectrum")
+    elif _adduct_warning:
+        lines.append("[WARN] Peaks above M+\u2022 detected \u2014 possible mixture or incorrect formula")
+    if _m1_m_ratio > 0 and _m1_m_ratio > (0.01 * 1.3):  # Theoretical_M1 ~0.01 for most molecules
+        lines.append("[INFO] Possible [M+H]+ adduct at m/z {}: M+1/M ratio = {:.3f}".format(
+            parent_nominal_mz + 1, _m1_m_ratio))
+
     mol_block = record.get("mol_block", "")
     original_fields = record.get("fields", {})
 
@@ -219,6 +299,27 @@ def format_record(
             _reference_peaks = ref_entry
             lines.append("[INFO] Reference match found for '{}': {} peaks".format(
                 name, len(ref_entry)))
+
+    # ── D3: Compound class templates ──────────────────────────────────────────
+    _compound_class = _classify_compound(parent, parent_dbe)
+    _class_templates = CLASS_TEMPLATES.get(_compound_class, [])
+
+    # ── E6: Molecular ion confirmation ───────────────────────────────────────
+    if intensity_map:
+        if parent_nominal_mz in intensity_map:
+            _m_ion_confirmed = True
+        # Check for peaks above M+•
+        peaks_above = [mz for mz in intensity_map.keys() if mz > parent_nominal_mz]
+        if peaks_above:
+            max_above = max(peaks_above)
+            max_intensity = max(intensity_map.values())
+            if intensity_map.get(max_above, 0) > 0.05 * max_intensity:
+                _adduct_warning = True
+        # Check for possible [M+H]+ adduct (M+1)
+        if parent_nominal_mz in intensity_map and parent_nominal_mz + 1 in intensity_map:
+            m_intensity = intensity_map.get(parent_nominal_mz, 1e-10)
+            m1_intensity = intensity_map.get(parent_nominal_mz + 1, 0)
+            _m1_m_ratio = m1_intensity / m_intensity if m_intensity > 0 else 0.0
 
     # ── Confidence mode: collect ALL candidates first, then score ──────────
     _use_confidence = confidence and not hr_input
@@ -380,6 +481,23 @@ def format_record(
             _mz_str = "{:.6f}".format(mz) if hr_input else "{:d}".format(mz)
             lines.append("\n  m/z {:>12}  \u2014  {} candidate(s)".format(
                 _mz_str, len(candidates)))
+
+            # D3: Check if this peak matches a class template formula
+            _class_template_tag = ""
+            for template_mz, template_comp in _class_templates:
+                if int(round(mz)) == template_mz:
+                    template_formula = hill_formula(template_comp)
+                    _class_template_tag = "  [CLASS_TEMPLATE: {}]".format(template_formula)
+                    break
+
+            # E6: Check if this is the molecular ion
+            _m_ion_tag = ""
+            if int(round(mz)) == parent_nominal_mz:
+                _m_ion_tag = "  [M+\u2022]"
+
+            if _class_template_tag or _m_ion_tag:
+                lines.append("  {}{}".format(_class_template_tag, _m_ion_tag))
+
             show_filter = filter_config is not None
 
             if show_isotope:

@@ -717,6 +717,256 @@ def _compositions_equal(a: dict, b: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# D1: Secondary fragmentation (fragmentation_rules.py)
+# ---------------------------------------------------------------------------
+
+def get_secondary_fragments(mol_data: dict, primary_frags: list[dict]) -> list[dict]:
+    """
+    For each primary fragment composition, reconstruct a minimal mol_data
+    (atoms = elements × count, no bonds beyond single chain) and apply
+    get_structure_fragments() to it. Limit depth to 1 recursive level.
+    Tag results "secondary": True. Merge into whitelist.
+
+    Parameters
+    ----------
+    mol_data       : dict  Original mol_data from parse_mol_block_full().
+    primary_frags  : list  Output of primary fragmentation (e.g., homolytic cleavages).
+
+    Returns
+    -------
+    list[dict]  Secondary fragment entries, tagged with "secondary": True.
+    """
+    results: list[dict] = []
+    seen_comps: set = set()
+
+    for prim in primary_frags:
+        # Extract primary fragment compositions
+        for comp_key in ("frag1_comp", "frag2_comp",
+                         "charged_frag_comp", "neutral_frag_comp", "enol_comp"):
+            comp = prim.get(comp_key)
+            if not comp:
+                continue
+
+            # Avoid duplicate secondary fragmentation
+            comp_tuple = tuple(sorted(comp.items()))
+            if comp_tuple in seen_comps:
+                continue
+            seen_comps.add(comp_tuple)
+
+            # Reconstruct minimal mol_data for this fragment composition
+            # Create atom list: one atom per element (repeated by count)
+            atoms_list = []
+            bonds_list = []
+            atom_idx = 0
+
+            for element, count in sorted(comp.items()):
+                for _ in range(count):
+                    atoms_list.append({"element": element, "index": atom_idx})
+                    atom_idx += 1
+
+            # Create adjacency list for a simple chain (linear)
+            # Only create single bonds between consecutive heavy atoms
+            heavy_idx = [i for i, a in enumerate(atoms_list) if a["element"] != "H"]
+            for j in range(len(heavy_idx) - 1):
+                a, b = heavy_idx[j], heavy_idx[j + 1]
+                bonds_list.append({
+                    "a1": a, "a2": b, "type": 1,  # single bond
+                    "stereo": 0, "topology": 0,
+                })
+
+            # Build minimal adjacency graph
+            adj_dict = {}
+            for i in range(len(atoms_list)):
+                adj_dict[i] = []
+            for bond in bonds_list:
+                a1, a2 = bond["a1"], bond["a2"]
+                adj_dict[a1].append(a2)
+                adj_dict[a2].append(a1)
+
+            minimal_mol_data = {
+                "atoms": atoms_list,
+                "bonds": bonds_list,
+                "adjacency": adj_dict,
+            }
+
+            # Apply get_structure_fragments() to the minimal mol_data (recursive, depth 1)
+            try:
+                secondary = get_structure_fragments(minimal_mol_data)
+                for sec_frag in secondary:
+                    sec_copy = dict(sec_frag)
+                    sec_copy["secondary"] = True
+                    results.append(sec_copy)
+            except Exception:
+                # Silently skip if reconstruction fails
+                pass
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# D2: Retro-Diels-Alder (fragmentation_rules.py)
+# ---------------------------------------------------------------------------
+
+def _find_6_membered_rings(adjacency: dict, n_atoms: int) -> list[frozenset]:
+    """
+    Find all 6-membered rings using DFS from each atom.
+
+    Parameters
+    ----------
+    adjacency : dict  Adjacency list {atom_idx: [neighbor_idxs]}.
+    n_atoms   : int   Total number of atoms.
+
+    Returns
+    -------
+    list[frozenset]  Each element is a frozenset of 6 atom indices forming a ring.
+    """
+    rings = []
+    seen_rings = set()
+
+    def dfs_cycle(start, current, path, visited):
+        """DFS to find cycles starting from 'start'."""
+        if len(path) == 6:
+            if start in adjacency.get(current, []):
+                # Found a 6-cycle
+                ring = frozenset(path)
+                if ring not in seen_rings:
+                    seen_rings.add(ring)
+                    rings.append(ring)
+            return
+
+        for neighbor in adjacency.get(current, []):
+            if neighbor == start and len(path) >= 3:
+                # Found a cycle back to start
+                if len(path) == 6:
+                    ring = frozenset(path)
+                    if ring not in seen_rings:
+                        seen_rings.add(ring)
+                        rings.append(ring)
+                return
+            if neighbor not in visited:
+                visited.add(neighbor)
+                path.append(neighbor)
+                dfs_cycle(start, neighbor, path, visited)
+                path.pop()
+                visited.remove(neighbor)
+
+    # Run DFS from each atom
+    for start_idx in range(n_atoms):
+        dfs_cycle(start_idx, start_idx, [start_idx], {start_idx})
+
+    return rings
+
+
+def apply_retro_diels_alder(mol_data: dict) -> list[dict]:
+    """
+    Retro-Diels-Alder (RDA) fragmentation: find all 6-membered rings,
+    identify C=C double bond, and cut the two C-C single bonds flanking
+    the non-double-bond end. Generate two even-electron fragments.
+
+    Parameters
+    ----------
+    mol_data : dict  Output of :func:`mol_parser.parse_mol_block_full`.
+
+    Returns
+    -------
+    list[dict]  One entry per RDA pathway::
+
+        {
+          "rule": "retro_diels_alder",
+          "ring_atoms": frozenset([0, 1, 2, 3, 4, 5]),
+          "double_bond": (a1, a2),
+          "cut_bonds": [(b1, b2), (c1, c2)],
+          "frag1_comp": {...},
+          "frag2_comp": {...},
+          "frag1_formula": "C4H6",
+          "frag2_formula": "C2H2",
+        }
+    """
+    atoms     = mol_data["atoms"]
+    bonds     = mol_data["bonds"]
+    adjacency = mol_data["adjacency"]
+    results: list[dict] = []
+
+    # Find all 6-membered rings
+    rings = _find_6_membered_rings(adjacency, len(atoms))
+
+    for ring in rings:
+        ring_list = sorted(list(ring))
+
+        # Find C=C double bonds within the ring
+        double_bonds = []
+        for bond in bonds:
+            if bond["type"] != 2:
+                continue  # Skip non-double bonds
+            a1, a2 = bond["a1"], bond["a2"]
+            if a1 in ring and a2 in ring:
+                # Both atoms in the ring, and it's a double bond
+                if atoms[a1]["element"] == "C" and atoms[a2]["element"] == "C":
+                    double_bonds.append((a1, a2))
+
+        # For each double bond, find the two flanking single C-C bonds
+        for double_a, double_b in double_bonds:
+            # Identify atoms not bonded to the double bond
+            other_atoms = [x for x in ring_list if x not in (double_a, double_b)]
+
+            # Find C-C single bonds that are not the double bond
+            cut_bonds = []
+            for bond in bonds:
+                if bond["type"] != 1:
+                    continue  # Only single bonds
+                a1, a2 = bond["a1"], bond["a2"]
+                if a1 not in ring or a2 not in ring:
+                    continue  # Both must be in ring
+
+                # Skip the double bond itself
+                if (a1, a2) == (double_a, double_b) or (a1, a2) == (double_b, double_a):
+                    continue
+
+                # Check if one endpoint is double_a or double_b
+                if (a1 == double_a or a1 == double_b) and atoms[a2]["element"] == "C":
+                    cut_bonds.append((a1, a2))
+                elif (a2 == double_a or a2 == double_b) and atoms[a1]["element"] == "C":
+                    cut_bonds.append((a1, a2))
+
+            # Only proceed if we have exactly 2 flanking bonds
+            if len(cut_bonds) != 2:
+                continue
+
+            # Cut both bonds simultaneously
+            cut_pairs = tuple(cut_bonds)
+            try:
+                # Use _connected_component with exclude_edge for each cut
+                # First, generate the two fragments by excluding both edges
+                frag1_atoms = _connected_component(adjacency, cut_bonds[0][0],
+                                                   exclude_edge=cut_bonds[0])
+                frag2_atoms = frozenset(range(len(atoms))) - frag1_atoms
+
+                # Both fragments should be even-electron (closed-shell)
+                frag1_comp = _atoms_to_composition(atoms, frag1_atoms)
+                frag2_comp = _atoms_to_composition(atoms, frag2_atoms)
+
+                # Add implicit H
+                frag1_comp = _add_implicit_h(frag1_comp, atoms, bonds, frag1_atoms)
+                frag2_comp = _add_implicit_h(frag2_comp, atoms, bonds, frag2_atoms)
+
+                results.append({
+                    "rule":          "retro_diels_alder",
+                    "ring_atoms":    frozenset(ring_list),
+                    "double_bond":   (double_a, double_b),
+                    "cut_bonds":     cut_bonds,
+                    "frag1_comp":    frag1_comp,
+                    "frag2_comp":    frag2_comp,
+                    "frag1_formula": hill_formula(frag1_comp),
+                    "frag2_formula": hill_formula(frag2_comp),
+                })
+            except Exception:
+                # Silently skip if fragmentation fails
+                pass
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Convenience: run all Tier 2 rules on a mol_data dict
 # ---------------------------------------------------------------------------
 
@@ -741,4 +991,11 @@ def get_structure_fragments(mol_data: Optional[dict]) -> list[dict]:
     results.extend(apply_alpha_cleavage(mol_data))
     results.extend(apply_inductive_cleavage(mol_data))
     results.extend(apply_mclafferty(mol_data))
+
+    # D2: Add retro-Diels-Alder fragmentation
+    results.extend(apply_retro_diels_alder(mol_data))
+
+    # D1: Add secondary fragmentation (primary frags already collected)
+    results.extend(get_secondary_fragments(mol_data, results))
+
     return results

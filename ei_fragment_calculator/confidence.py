@@ -255,8 +255,8 @@ def score_compound(
                     stable_bonus = STABLE_ION_BONUS
                     stable_tag = "STABLE({})".format(si[0])
 
-            # F — even/odd electron preference
-            even_odd_sc, eo_tag = _score_even_odd(cand, electron_mode) if enable_even_odd else (0.5, "")
+            # F — even/odd electron preference (E5: with mass-range adjustment)
+            even_odd_sc, eo_tag = _score_even_odd(cand, electron_mode, parent_nominal_mz) if enable_even_odd else (0.5, "")
 
             # Mass accuracy
             delta = abs(cand.get("delta_mass", 0.0))
@@ -400,6 +400,54 @@ def score_compound(
             for cand in cands:
                 cand["comp_score"] = boost
                 cand["evidence_tags"] = cand["evidence_tags"] + ["COMP"]
+                conf_updated = max(0.0, min(1.0, cand["confidence"] + boost))
+                cand["confidence"] = conf_updated
+                cand["confidence_pct"] = int(round(conf_updated * 100))
+            cands.sort(key=lambda c: c["confidence"], reverse=True)
+
+    # ── Pass 4: Kendrick series detection (E1) ─────────────────────────────
+    if enable_complementary:  # Use same enable flag since it's a multi-peak analysis
+        kendrick_deltas = {14: "CH2", 26: "C2H2", 18: "H2O"}
+        kendrick_boosts: dict[int, float] = {mz: 0.0 for mz in scored}
+
+        peak_mzs = sorted(scored.keys())
+        for delta, formula_name in kendrick_deltas.items():
+            # For each peak, check if peaks exist at mz±delta, mz±2×delta
+            for i, mz_center in enumerate(peak_mzs):
+                series_peaks = [mz_center]
+                # Check forward and backward
+                for mult in [1, 2]:
+                    if mz_center + mult * delta in peak_mzs:
+                        series_peaks.append(mz_center + mult * delta)
+                    if mz_center - mult * delta in peak_mzs:
+                        series_peaks.append(mz_center - mult * delta)
+
+                # If ≥3 peaks form a series, check formula consistency
+                if len(series_peaks) >= 3:
+                    series_peaks_sorted = sorted(series_peaks)
+                    consistent = True
+                    # Check that consecutive peaks differ by the expected delta
+                    for j in range(len(series_peaks_sorted) - 1):
+                        diff = series_peaks_sorted[j + 1] - series_peaks_sorted[j]
+                        if abs(diff - delta) > 1:  # Within ±1 mass tolerance
+                            consistent = False
+                            break
+
+                    if consistent:
+                        # Boost all members of the series
+                        boost = 0.15
+                        for peak_mz in series_peaks_sorted:
+                            if boost > kendrick_boosts[peak_mz]:
+                                kendrick_boosts[peak_mz] = boost
+
+        # Apply Kendrick boosts and re-rank
+        for mz, cands in scored.items():
+            boost = kendrick_boosts[mz]
+            if boost <= 0:
+                continue
+            for cand in cands:
+                cand["kendrick_score"] = boost
+                cand["evidence_tags"] = cand["evidence_tags"] + ["SERIES(CH2)"]
                 conf_updated = max(0.0, min(1.0, cand["confidence"] + boost))
                 cand["confidence"] = conf_updated
                 cand["confidence_pct"] = int(round(conf_updated * 100))
@@ -578,6 +626,7 @@ def _dbe_penalty(candidate: dict, parent_dbe: float) -> float:
 def _score_even_odd(
     candidate: dict,
     electron_mode: str,
+    parent_nominal_mz: int = None,
 ) -> tuple[float, str]:
     """
     Score based on the even-electron / odd-electron nature of the fragment.
@@ -595,9 +644,14 @@ def _score_even_odd(
     EI produces predominantly even-electron fragment ions, with odd-electron
     fragments appearing mainly at high m/z (close to the molecular ion).
 
+    E5: Mass-range dependent scoring:
+    - mz > 0.8 × parent_mz: even=0.6, odd=1.0 (high-mass: radical cations dominate)
+    - mz < 0.3 × parent_mz: even=0.8, odd=0.8 (low-mass: no preference)
+    - middle: even=1.0, odd=0.7 (current, default)
+
     Score:
-    - even-electron (integer DBE): 1.0
-    - odd-electron (half-integer DBE): 0.7 (plausible, but less common)
+    - even-electron (integer DBE): 1.0 (or range-adjusted)
+    - odd-electron (half-integer DBE): 0.7 (plausible, or range-adjusted)
     - DBE not calculable: 0.5 (neutral)
     """
     dbe = candidate.get("dbe", None)
@@ -605,10 +659,29 @@ def _score_even_odd(
         return 0.5, ""
     # Check if DBE is (approximately) integer or half-integer
     frac = abs(dbe - round(dbe))  # should be ~0 (integer) or ~0.5 (half-integer)
+
+    # Default scores
+    even_score = 1.0
+    odd_score = 0.7
+
+    # E5: Adjust scores based on mass range
+    if parent_nominal_mz is not None:
+        mz = candidate.get("ion_mass", 0)
+        if mz > 0 and parent_nominal_mz > 0:
+            if mz > 0.8 * parent_nominal_mz:
+                # High-mass: radical cations dominate
+                even_score = 0.6
+                odd_score = 1.0
+            elif mz < 0.3 * parent_nominal_mz:
+                # Low-mass: no preference
+                even_score = 0.8
+                odd_score = 0.8
+            # else: middle range uses default scores
+
     if frac < 0.1:
-        return 1.0, "ee"   # even-electron: more stable, preferred
+        return even_score, "ee"   # even-electron: more stable, preferred
     if abs(frac - 0.5) < 0.1:
-        return 0.7, "oe"   # odd-electron: possible but less common
+        return odd_score, "oe"   # odd-electron: possible but less common
     return 0.5, ""
 
 
