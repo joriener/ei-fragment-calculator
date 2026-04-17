@@ -1470,9 +1470,21 @@ class _SDFViewerTab(ttk.Frame):
             ttk.Button(file_fr, text="Load", command=self._load_button_clicked).grid(
                 row=0, column=3)
 
+            # MSPEC file loading option
+            ttk.Label(file_fr, text="MSPEC File:").grid(row=1, column=0, sticky=tk.W, pady=2)
+            mspec_path_var = tk.StringVar()
+            ttk.Entry(file_fr, textvariable=mspec_path_var).grid(
+                row=1, column=1, sticky=tk.EW, padx=(6, 4))
+            ttk.Button(file_fr, text="Browse…",
+                      command=lambda: self._browse_mspec(mspec_path_var)).grid(
+                row=1, column=2, padx=(0, 2))
+            ttk.Button(file_fr, text="Load",
+                      command=lambda: self._load_mspec(mspec_path_var.get()) if mspec_path_var.get() else messagebox.showwarning("No File", "Please select a MSPEC file")).grid(
+                row=1, column=3)
+
             # Persistent database option
             db_fr = ttk.Frame(file_fr)
-            db_fr.grid(row=1, column=0, columnspan=4, sticky=tk.EW, pady=(6, 0))
+            db_fr.grid(row=2, column=0, columnspan=4, sticky=tk.EW, pady=(6, 0))
             db_fr.columnconfigure(2, weight=1)
 
             persist_check = ttk.Checkbutton(db_fr, text="Save database to file:",
@@ -1675,6 +1687,13 @@ class _SDFViewerTab(ttk.Frame):
                 print(f"[DEBUG] File exists, loading: {path}")
                 self._load_sdf(path)
 
+    def _browse_mspec(self, path_var: tk.StringVar) -> None:
+        """Browse for MSPEC file."""
+        path = filedialog.askopenfilename(
+            filetypes=[("MSPEC files", "*.mspec"), ("MSPEC files", "*.MSPEC"), ("All files", "*.*")])
+        if path:
+            path_var.set(path)
+
     def _on_persist_toggled(self) -> None:
         """Handle persistent database checkbox toggle."""
         if self._persist_db_var.get():
@@ -1771,7 +1790,34 @@ class _SDFViewerTab(ttk.Frame):
                     compound_id INTEGER PRIMARY KEY,
                     mol_reference TEXT,
                     FOREIGN KEY(compound_id) REFERENCES compounds(id)
-                )
+                );
+
+                CREATE TABLE IF NOT EXISTS retention_indices (
+                    id INTEGER PRIMARY KEY,
+                    compound_id INTEGER,
+                    gc_column TEXT,
+                    ri_value REAL,
+                    deviation REAL,
+                    data_points INTEGER,
+                    FOREIGN KEY(compound_id) REFERENCES compounds(id),
+                    UNIQUE(compound_id, gc_column)
+                );
+
+                CREATE TABLE IF NOT EXISTS retention_times (
+                    id INTEGER PRIMARY KEY,
+                    compound_id INTEGER,
+                    gc_method TEXT,
+                    gc_column TEXT,
+                    rt_value REAL,
+                    temperature_program TEXT,
+                    FOREIGN KEY(compound_id) REFERENCES compounds(id),
+                    UNIQUE(compound_id, gc_method, gc_column)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ri_compound ON retention_indices(compound_id);
+                CREATE INDEX IF NOT EXISTS idx_ri_value ON retention_indices(ri_value);
+                CREATE INDEX IF NOT EXISTS idx_rt_compound ON retention_times(compound_id);
+                CREATE INDEX IF NOT EXISTS idx_rt_value ON retention_times(rt_value)
             """)
 
             self._db_conn.commit()
@@ -1779,6 +1825,28 @@ class _SDFViewerTab(ttk.Frame):
         except Exception as e:
             print(f"[ERROR] Failed to initialize database: {e}")
             raise
+
+    def _update_db_status(self, status_text: str) -> None:
+        """Update the database status label in the UI."""
+        if hasattr(self, '_db_file_label'):
+            self._db_file_label.config(text=status_text, foreground="#0066cc")
+
+    def _close_database(self) -> None:
+        """Close the current database connection."""
+        if self._db_conn:
+            try:
+                self._db_conn.close()
+                self._db_conn = None
+                self._db_cursor = None
+                self._records.clear()
+                self._compound_tree.delete(*self._compound_tree.get_children())
+                # Clear record display
+                if hasattr(self, '_record_display'):
+                    self._record_display.delete(1.0, tk.END)
+                self._update_db_status("[No database]")
+                print("[DEBUG] Database closed")
+            except Exception as e:
+                print(f"[ERROR] Failed to close database: {e}")
 
     def _insert_sdf_to_database(self, mol, idx: int, fields: dict) -> None:
         """Insert SDF record data into database."""
@@ -1958,6 +2026,96 @@ class _SDFViewerTab(ttk.Frame):
             import traceback
             traceback.print_exc()
             messagebox.showerror("Error", f"Failed to load SDF:\n{str(e)[:300]}")
+
+    def _load_mspec(self, path: str) -> None:
+        """Load MSPEC file and insert into database."""
+        from ei_fragment_calculator.importers.mspec_parser import parse_mspec_file, parse_retention_index
+
+        try:
+            print(f"[DEBUG] Loading MSPEC file: {path}")
+
+            # Ensure database is initialized
+            if not self._db_conn:
+                self._init_database(db_path=None)
+
+            records = parse_mspec_file(path)
+            print(f"[DEBUG] Parsed {len(records)} records from MSPEC file")
+
+            for record in records:
+                # Extract main fields
+                name = record.get('Name', '')
+                formula = record.get('Formula', '')
+                mw_str = record.get('MW', '')
+                try:
+                    mw = float(mw_str) if mw_str else None
+                except (ValueError, TypeError):
+                    mw = None
+
+                cas = record.get('CAS#', '')
+
+                # Insert into compounds table
+                self._db_cursor.execute("""
+                    INSERT INTO compounds (name, formula, molecular_weight, cas_number)
+                    VALUES (?, ?, ?, ?)
+                """, (name, formula, mw, cas))
+
+                compound_id = self._db_cursor.lastrowid
+                print(f"[DEBUG] Inserted compound {compound_id}: {name}")
+
+                # Insert RI data if available
+                if 'Retention_index' in record:
+                    ri_dict = record['Retention_index']
+                    for gc_column, (ri_val, deviation, data_points) in ri_dict.items():
+                        self._db_cursor.execute("""
+                            INSERT INTO retention_indices (compound_id, gc_column, ri_value, deviation, data_points)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (compound_id, gc_column, ri_val, deviation, data_points))
+                    print(f"[DEBUG]   Inserted {len(ri_dict)} RI data entries")
+
+                # Insert peaks
+                peaks = record.get('peaks', [])
+                for mz, intensity in peaks:
+                    self._db_cursor.execute("""
+                        INSERT INTO mass_spectrum (compound_id, mz, intensity, base_peak)
+                        VALUES (?, ?, ?, ?)
+                    """, (compound_id, mz, intensity, 0))
+                print(f"[DEBUG]   Inserted {len(peaks)} peaks")
+
+                # Insert other fields into metadata
+                excluded = {'Name', 'Formula', 'MW', 'CAS#', 'Retention_index', 'Num Peaks', 'peaks', 'InChIKey'}
+                for key, value in record.items():
+                    if key not in excluded:
+                        if isinstance(value, list):  # Handle Synon, etc.
+                            for v in value:
+                                if v:  # Skip empty values
+                                    self._db_cursor.execute("""
+                                        INSERT INTO metadata (compound_id, field_name, field_value)
+                                        VALUES (?, ?, ?)
+                                    """, (compound_id, key, str(v)))
+                        elif value:  # Skip empty values
+                            self._db_cursor.execute("""
+                                INSERT INTO metadata (compound_id, field_name, field_value)
+                                VALUES (?, ?, ?)
+                            """, (compound_id, key, str(value)))
+
+            self._db_conn.commit()
+            print(f"[DEBUG] MSPEC file loaded and committed")
+
+            # Store file path and populate UI
+            self._sdf_path.set(path)
+            self._records = list(range(len(records)))
+            self._current_idx = 0
+            self._populate_compound_list()
+            self._show_record(0, highlight_in_tree=True)
+            self._update_nav_label()
+            print("[DEBUG] MSPEC loaded and displayed - loading complete!")
+            messagebox.showinfo("Success", f"Loaded {len(records)} compounds from MSPEC file")
+
+        except Exception as e:
+            print(f"[ERROR] Exception in _load_mspec: {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to load MSPEC:\n{str(e)[:300]}")
 
     def _populate_compound_list(self) -> None:
         """Populate the compound list with all records from database."""
@@ -2448,17 +2606,26 @@ class _SDFViewerTab(ttk.Frame):
             return
 
         record_id = self._current_idx + 1
-        print(f"[DEBUG] _edit_metadata: current_idx={self._current_idx}, record_id={record_id}")
+
+        # Get compound name for title
+        try:
+            compound_name = self._db_cursor.execute(
+                "SELECT name FROM compounds WHERE id = ?", (record_id,)
+            ).fetchone()[0]
+        except:
+            compound_name = f"Compound {record_id}"
+
+        print(f"[DEBUG] _edit_metadata: current_idx={self._current_idx}, record_id={record_id}, name={compound_name}")
 
         # Create dialog window
         dialog = tk.Toplevel(self)
-        dialog.title(f"Edit Metadata - Record {record_id}")
+        dialog.title(f"Edit Metadata - {compound_name}")
         dialog.geometry("500x400")
 
-        # Load metadata from database
+        # Load metadata from database (exclude mass spectral data)
         try:
             metadata_rows = self._db_cursor.execute(
-                "SELECT field_name, field_value FROM metadata WHERE compound_id = ? ORDER BY field_name",
+                "SELECT field_name, field_value FROM metadata WHERE compound_id = ? AND field_name NOT LIKE '%PEAK%' AND field_name NOT LIKE '%SPECTRUM%' ORDER BY field_name",
                 (record_id,)
             ).fetchall()
             print(f"[DEBUG] Retrieved {len(metadata_rows)} metadata rows")
@@ -2526,32 +2693,55 @@ class _SDFViewerTab(ttk.Frame):
         changes = {"modified": {}, "deleted": set(), "added": {}}
 
         def on_double_click(event):
-            """Edit cell on double-click."""
-            item = meta_tree.selection()[0]
-            field_name = item_map[item]
-            col = meta_tree.identify_column(event.x)
+            """Edit cell on double-click - inline entry."""
+            try:
+                if not meta_tree.selection():
+                    return
 
-            if col == "Value":
-                # Edit value
-                current_value = meta_tree.item(item, "values")[0]
-                edit_dialog = tk.Toplevel(dialog)
-                edit_dialog.title(f"Edit: {field_name}")
-                edit_dialog.geometry("400x150")
+                item = meta_tree.selection()[0]
+                if item not in item_map:
+                    return
 
-                ttk.Label(edit_dialog, text=f"Field: {field_name}").pack(padx=10, pady=5)
-                value_text = scrolledtext.ScrolledText(edit_dialog, height=5, width=45)
-                value_text.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
-                value_text.insert("1.0", str(current_value) if current_value else "")
-                value_text.focus()
+                field_name = item_map[item]
+                col = meta_tree.identify_column(event.x)
 
-                def save_value():
-                    new_value = value_text.get("1.0", tk.END).strip()
-                    meta_tree.item(item, values=(new_value,))
-                    changes["modified"][field_name] = new_value
-                    edit_dialog.destroy()
+                if col == "#1":  # Value column (column index 1)
+                    current_value = meta_tree.item(item, "values")[0]
 
-                ttk.Button(edit_dialog, text="Save", command=save_value).pack(side=tk.LEFT, padx=5, pady=5)
-                ttk.Button(edit_dialog, text="Cancel", command=edit_dialog.destroy).pack(side=tk.LEFT, padx=5)
+                    # Get cell bounding box for positioning
+                    bbox = meta_tree.bbox(item, col)
+                    if not bbox:
+                        return
+
+                    # Create inline entry widget
+                    entry = tk.Entry(tree_fr, width=40)
+                    entry.insert(0, str(current_value) if current_value else "")
+
+                    # Position entry over the cell
+                    entry.place(x=bbox[0], y=bbox[1], width=bbox[2], height=bbox[3])
+
+                    def save_on_focusout(e=None):
+                        try:
+                            new_value = entry.get().strip()
+                            meta_tree.item(item, values=(new_value,))
+                            changes["modified"][field_name] = new_value
+                        finally:
+                            entry.destroy()
+
+                    def save_on_return(e):
+                        save_on_focusout()
+
+                    def on_escape(e):
+                        entry.destroy()
+
+                    entry.bind("<Return>", save_on_return)
+                    entry.bind("<FocusOut>", save_on_focusout)
+                    entry.bind("<Escape>", on_escape)
+                    entry.focus()
+                    entry.select_range(0, tk.END)
+
+            except Exception as e:
+                print(f"[DEBUG] Error in on_double_click: {e}")
 
         meta_tree.bind("<Double-1>", on_double_click)
 
@@ -2559,33 +2749,35 @@ class _SDFViewerTab(ttk.Frame):
         btn_fr = ttk.Frame(dialog)
         btn_fr.pack(fill=tk.X, padx=5, pady=5)
 
+        # Add field inline frame
+        add_fr = ttk.Frame(dialog)
+        add_fr.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(add_fr, text="Add Field:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+
+        new_field_name = tk.StringVar()
+        name_entry = ttk.Entry(add_fr, textvariable=new_field_name, width=15)
+        name_entry.pack(side=tk.LEFT, padx=(0, 5))
+
+        new_field_value = tk.StringVar()
+        value_entry = ttk.Entry(add_fr, textvariable=new_field_value, width=30)
+        value_entry.pack(side=tk.LEFT, padx=(0, 5))
+
         def add_field():
-            """Add new metadata field."""
-            add_dialog = tk.Toplevel(dialog)
-            add_dialog.title("Add Field")
-            add_dialog.geometry("350x150")
+            """Add new metadata field inline."""
+            field_name = new_field_name.get().strip()
+            field_value = new_field_value.get().strip()
+            if not field_name:
+                messagebox.showwarning("Empty", "Field name cannot be empty")
+                return
+            item_id = meta_tree.insert("", tk.END, text=field_name, values=(field_value,))
+            item_map[item_id] = field_name
+            changes["added"][field_name] = field_value
+            new_field_name.set("")
+            new_field_value.set("")
+            name_entry.focus()
 
-            ttk.Label(add_dialog, text="Field Name:").pack(padx=10, pady=5)
-            name_entry = ttk.Entry(add_dialog)
-            name_entry.pack(padx=10, pady=5, fill=tk.X)
-
-            ttk.Label(add_dialog, text="Value:").pack(padx=10, pady=5)
-            value_entry = ttk.Entry(add_dialog)
-            value_entry.pack(padx=10, pady=5, fill=tk.X)
-
-            def save_new():
-                field_name = name_entry.get().strip()
-                field_value = value_entry.get().strip()
-                if not field_name:
-                    messagebox.showwarning("Empty", "Field name cannot be empty")
-                    return
-                item_id = meta_tree.insert("", tk.END, text=field_name, values=(field_value,))
-                item_map[item_id] = field_name
-                changes["added"][field_name] = field_value
-                add_dialog.destroy()
-
-            ttk.Button(add_dialog, text="Add", command=save_new).pack(side=tk.LEFT, padx=5, pady=5)
-            ttk.Button(add_dialog, text="Cancel", command=add_dialog.destroy).pack(side=tk.LEFT, padx=5)
+        ttk.Button(add_fr, text="Add", command=add_field).pack(side=tk.LEFT)
 
         def delete_field():
             """Delete selected field."""
@@ -2602,8 +2794,11 @@ class _SDFViewerTab(ttk.Frame):
             else:
                 del changes["added"][field_name]
 
-        def save_changes():
+        def save_changes(show_message=True):
             """Save all metadata changes to database."""
+            if not changes["modified"] and not changes["added"] and not changes["deleted"]:
+                return  # Nothing to save
+
             try:
                 # UPDATE modified fields
                 for field_name, value in changes["modified"].items():
@@ -2648,18 +2843,26 @@ class _SDFViewerTab(ttk.Frame):
                         )
 
                 self._db_conn.commit()
-                messagebox.showinfo("Success", "Metadata updated successfully")
-                dialog.destroy()
+                if show_message:
+                    messagebox.showinfo("Success", "Metadata updated successfully")
 
                 # Refresh display
                 self._show_record(self._current_idx, highlight_in_tree=False)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save: {e}")
 
-        ttk.Button(btn_fr, text="+ Add Field", command=add_field).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_fr, text="- Delete Field", command=delete_field).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_fr, text="Save", command=save_changes).pack(side=tk.RIGHT, padx=5)
+
+        def on_close():
+            """Auto-save and close dialog."""
+            save_changes(show_message=False)
+            dialog.destroy()
+
+        ttk.Button(btn_fr, text="Save & Close", command=on_close).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+        # Auto-save on window close
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
 
     def _edit_mass_spectrum(self) -> None:
         """Open mass spectrum editor for current record."""
@@ -2668,11 +2871,20 @@ class _SDFViewerTab(ttk.Frame):
             return
 
         record_id = self._current_idx + 1
-        print(f"[DEBUG] _edit_mass_spectrum: current_idx={self._current_idx}, record_id={record_id}")
+
+        # Get compound name for title
+        try:
+            compound_name = self._db_cursor.execute(
+                "SELECT name FROM compounds WHERE id = ?", (record_id,)
+            ).fetchone()[0]
+        except:
+            compound_name = f"Compound {record_id}"
+
+        print(f"[DEBUG] _edit_mass_spectrum: current_idx={self._current_idx}, record_id={record_id}, name={compound_name}")
 
         # Create dialog window
         dialog = tk.Toplevel(self)
-        dialog.title(f"Edit Mass Spectrum - Record {record_id}")
+        dialog.title(f"Edit Spectrum - {compound_name}")
         dialog.geometry("600x500")
 
         # Load peaks from database
@@ -2735,66 +2947,76 @@ class _SDFViewerTab(ttk.Frame):
         sort_state = {"column": "mz", "reverse": False}
 
         def on_double_click(event):
-            """Edit cell on double-click."""
-            if not peaks_tree.selection():
-                return
-            item = peaks_tree.selection()[0]
-            col = peaks_tree.identify_column(event.x)
+            """Edit cell on double-click - inline entry."""
+            try:
+                if not peaks_tree.selection():
+                    return
+                item = peaks_tree.selection()[0]
+                col = peaks_tree.identify_column(event.x)
 
-            if col in ("#1", "#2", "#3"):  # m/z, intensity, or base peak column
-                peak_info = item_map[item]
-                col_idx = int(col[1:]) - 1  # Convert to 0-indexed
-                col_names = ["mz", "intensity", "base"]
-                col_name = col_names[col_idx]
+                if col in ("#1", "#2"):  # m/z or intensity columns
+                    peak_info = item_map[item]
+                    col_idx = int(col[1:]) - 1
+                    col_names = ["mz", "intensity"]
+                    col_name = col_names[col_idx]
+                    current_value = peaks_tree.item(item, "values")[col_idx]
 
-                if col_name == "base":
-                    # Toggle base peak
+                    # Get cell bounding box for positioning
+                    bbox = peaks_tree.bbox(item, col)
+                    if not bbox:
+                        return
+
+                    entry = tk.Entry(tree_fr, width=15)
+                    entry.insert(0, str(current_value))
+
+                    # Position entry over the cell
+                    entry.place(x=bbox[0], y=bbox[1], width=bbox[2], height=bbox[3])
+
+                    def save_on_focusout(e=None):
+                        try:
+                            new_val = float(entry.get())
+                            if col_name == "mz" and new_val <= 0:
+                                messagebox.showerror("Invalid", "m/z must be > 0")
+                                return
+                            elif col_name == "intensity" and new_val < 0:
+                                messagebox.showerror("Invalid", "Intensity cannot be negative")
+                                return
+
+                            if col_name == "mz":
+                                peak_info["mz"] = new_val
+                            else:
+                                peak_info["intensity"] = new_val
+                            peaks_tree.item(item, values=(f"{peak_info['mz']:.4f}",
+                                                         f"{peak_info['intensity']:.2f}",
+                                                         "●" if peak_info["base"] else "○"))
+                            changes["modified"][item] = peak_info
+                        except ValueError:
+                            messagebox.showerror("Invalid", "Please enter a valid number")
+                        finally:
+                            entry.destroy()
+
+                    def save_on_return(e):
+                        save_on_focusout()
+
+                    def on_escape(e):
+                        entry.destroy()
+
+                    entry.bind("<Return>", save_on_return)
+                    entry.bind("<FocusOut>", save_on_focusout)
+                    entry.bind("<Escape>", on_escape)
+                    entry.focus()
+                    entry.select_range(0, tk.END)
+
+                elif col == "#3":  # Base peak column - toggle
+                    peak_info = item_map[item]
                     peak_info["base"] = not peak_info["base"]
                     base_mark = "●" if peak_info["base"] else "○"
                     peaks_tree.item(item, values=(f"{peak_info['mz']:.4f}",
                                                  f"{peak_info['intensity']:.2f}", base_mark))
                     changes["modified"][item] = peak_info
-                else:
-                    # Edit value
-                    current_value = peaks_tree.item(item, "values")[col_idx]
-                    edit_dialog = tk.Toplevel(dialog)
-                    edit_dialog.title(f"Edit {col_name.upper()}")
-                    edit_dialog.geometry("300x120")
 
-                    ttk.Label(edit_dialog, text=f"Enter {col_name} value:").pack(padx=10, pady=5)
-                    value_entry = ttk.Entry(edit_dialog, width=30)
-                    value_entry.pack(padx=10, pady=5)
-                    value_entry.insert(0, str(current_value))
-                    value_entry.focus()
-                    value_entry.select_range(0, tk.END)
-
-                    def save_value():
-                        try:
-                            if col_name == "mz":
-                                new_val = float(value_entry.get())
-                                if new_val <= 0:
-                                    messagebox.showerror("Invalid", "m/z must be > 0")
-                                    return
-                                peak_info["mz"] = new_val
-                            else:  # intensity
-                                new_val = float(value_entry.get())
-                                if new_val < 0:
-                                    messagebox.showerror("Invalid", "Intensity cannot be negative")
-                                    return
-                                peak_info["intensity"] = new_val
-
-                            peaks_tree.item(item, values=(f"{peak_info['mz']:.4f}",
-                                                         f"{peak_info['intensity']:.2f}",
-                                                         "●" if peak_info["base"] else "○"))
-                            changes["modified"][item] = peak_info
-                            edit_dialog.destroy()
-                        except ValueError:
-                            messagebox.showerror("Invalid", "Please enter a valid number")
-
-                    ttk.Button(edit_dialog, text="Save", command=save_value).pack(
-                        side=tk.LEFT, padx=5, pady=5)
-                    ttk.Button(edit_dialog, text="Cancel", command=edit_dialog.destroy).pack(
-                        side=tk.LEFT, padx=5)
+            except Exception as e:
+                print(f"[DEBUG] Error in on_double_click: {e}")
 
         peaks_tree.bind("<Double-1>", on_double_click)
 
@@ -2823,52 +3045,57 @@ class _SDFViewerTab(ttk.Frame):
         peaks_tree.heading("mz", command=lambda: sort_by_column("mz"))
         peaks_tree.heading("intensity", command=lambda: sort_by_column("intensity"))
 
+        # Add peak inline frame
+        add_fr = ttk.Frame(dialog)
+        add_fr.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(add_fr, text="Add Peak:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 5))
+
+        new_mz = tk.StringVar()
+        mz_entry = ttk.Entry(add_fr, textvariable=new_mz, width=12)
+        mz_entry.pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(add_fr, text="m/z").pack(side=tk.LEFT, padx=(0, 10))
+
+        new_intensity = tk.StringVar()
+        int_entry = ttk.Entry(add_fr, textvariable=new_intensity, width=12)
+        int_entry.pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(add_fr, text="Intensity").pack(side=tk.LEFT, padx=(0, 10))
+
+        base_peak_var = tk.BooleanVar()
+        base_check = ttk.Checkbutton(add_fr, text="Base Peak", variable=base_peak_var)
+        base_check.pack(side=tk.LEFT, padx=(0, 10))
+
+        def add_peak():
+            """Add new peak inline."""
+            try:
+                mz = float(new_mz.get().strip())
+                intensity = float(new_intensity.get().strip())
+                if mz <= 0:
+                    messagebox.showerror("Invalid", "m/z must be > 0")
+                    return
+                if intensity < 0:
+                    messagebox.showerror("Invalid", "Intensity cannot be negative")
+                    return
+
+                next_idx = len(peaks_tree.get_children())
+                item_id = peaks_tree.insert("", tk.END, text=str(next_idx + 1),
+                                           values=(f"{mz:.4f}", f"{intensity:.2f}",
+                                                  "●" if base_peak_var.get() else "○"))
+                item_map[item_id] = {"idx": next_idx, "mz": mz, "intensity": intensity,
+                                    "base": base_peak_var.get()}
+                changes["added"].append(item_id)
+                new_mz.set("")
+                new_intensity.set("")
+                base_peak_var.set(False)
+                mz_entry.focus()
+            except ValueError:
+                messagebox.showerror("Invalid", "Please enter valid numbers")
+
+        ttk.Button(add_fr, text="Add", command=add_peak).pack(side=tk.LEFT)
+
         # Buttons
         btn_fr = ttk.Frame(dialog)
         btn_fr.pack(fill=tk.X, padx=5, pady=5)
-
-        def add_peak():
-            """Add new peak."""
-            add_dialog = tk.Toplevel(dialog)
-            add_dialog.title("Add Peak")
-            add_dialog.geometry("300x180")
-
-            ttk.Label(add_dialog, text="m/z:").pack(padx=10, pady=5)
-            mz_entry = ttk.Entry(add_dialog)
-            mz_entry.pack(padx=10, pady=5, fill=tk.X)
-
-            ttk.Label(add_dialog, text="Intensity:").pack(padx=10, pady=5)
-            int_entry = ttk.Entry(add_dialog)
-            int_entry.pack(padx=10, pady=5, fill=tk.X)
-
-            base_var = tk.BooleanVar()
-            ttk.Checkbutton(add_dialog, text="Base Peak", variable=base_var).pack(
-                padx=10, pady=5, anchor=tk.W)
-
-            def save_new():
-                try:
-                    mz = float(mz_entry.get())
-                    intensity = float(int_entry.get())
-                    if mz <= 0:
-                        messagebox.showerror("Invalid", "m/z must be > 0")
-                        return
-                    if intensity < 0:
-                        messagebox.showerror("Invalid", "Intensity cannot be negative")
-                        return
-
-                    next_idx = len(peaks_tree.get_children())
-                    item_id = peaks_tree.insert("", tk.END, text=str(next_idx + 1),
-                                               values=(f"{mz:.4f}", f"{intensity:.2f}",
-                                                      "●" if base_var.get() else "○"))
-                    item_map[item_id] = {"idx": next_idx, "mz": mz, "intensity": intensity,
-                                        "base": base_var.get()}
-                    changes["added"].append(item_id)
-                    add_dialog.destroy()
-                except ValueError:
-                    messagebox.showerror("Invalid", "Please enter valid numbers")
-
-            ttk.Button(add_dialog, text="Add", command=save_new).pack(side=tk.LEFT, padx=5, pady=5)
-            ttk.Button(add_dialog, text="Cancel", command=add_dialog.destroy).pack(side=tk.LEFT, padx=5)
 
         def delete_peak():
             """Delete selected peak."""
@@ -2882,7 +3109,7 @@ class _SDFViewerTab(ttk.Frame):
             changes["deleted"].add(peak_idx)
             del item_map[item]
 
-        def save_changes():
+        def save_changes(show_message=True):
             """Save all changes to database."""
             try:
                 # Clear existing peaks for this compound
@@ -2899,18 +3126,26 @@ class _SDFViewerTab(ttk.Frame):
                     )
 
                 self._db_conn.commit()
-                messagebox.showinfo("Success", "Mass spectrum updated successfully")
-                dialog.destroy()
+                if show_message:
+                    messagebox.showinfo("Success", "Mass spectrum updated successfully")
 
                 # Refresh display - replot the mass spectrum
                 self._show_record(self._current_idx, highlight_in_tree=False)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save: {e}")
 
-        ttk.Button(btn_fr, text="+ Add Peak", command=add_peak).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_fr, text="- Delete Peak", command=delete_peak).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_fr, text="Save", command=save_changes).pack(side=tk.RIGHT, padx=5)
+
+        def on_close():
+            """Auto-save and close dialog."""
+            save_changes(show_message=False)
+            dialog.destroy()
+
+        ttk.Button(btn_fr, text="Save & Close", command=on_close).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_fr, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+        # Auto-save on window close
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
 
     def _export_structure_image(self) -> None:
         """Export structure image(s) to PNG files."""
@@ -3438,6 +3673,21 @@ class EIFragmentApp(tk.Tk):
         ).start()
 
     def _build(self) -> None:
+        # ── Menu Bar ──────────────────────────────────────────────────────
+        menubar = tk.Menu(self)
+        self.config(menu=menubar)
+
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Create New In-Memory Database", command=self._db_new_in_memory)
+        file_menu.add_command(label="Create New Persistent Database", command=self._db_new_file)
+        file_menu.add_command(label="Open Existing Database", command=self._db_open_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="Close Database", command=self._db_close)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.quit)
+
         # ── Banner (shown when optional packages are missing) ─────────────
         self._banner_var = tk.StringVar()
         self._banner_bar = tk.Label(
@@ -3475,8 +3725,8 @@ class EIFragmentApp(tk.Tk):
             ).pack(anchor=tk.NW)
             nb.add(ph, text="  SDF Enricher  ")
 
-        viewer_tab = _SDFViewerTab(nb)
-        nb.add(viewer_tab, text="  SDF Viewer  ")
+        self._viewer_tab = _SDFViewerTab(nb)
+        nb.add(self._viewer_tab, text="  SDF Viewer  ")
 
         pkg_tab = _PackagesTab(nb)
         nb.add(pkg_tab, text="  Packages  ")
@@ -3486,6 +3736,46 @@ class EIFragmentApp(tk.Tk):
             self._banner_bar.pack(side=tk.TOP, fill=tk.X, before=self._nb)
         else:
             self._banner_bar.pack_forget()
+
+    # Database menu handlers
+    def _db_new_in_memory(self) -> None:
+        """Create a new in-memory database."""
+        self._viewer_tab._init_database(db_path=None)
+        self._viewer_tab._update_db_status("(in-memory database)")
+        messagebox.showinfo("Database", "Created new in-memory database")
+
+    def _db_new_file(self) -> None:
+        """Create a new persistent database file."""
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".db",
+            filetypes=[("SQLite Database", "*.db"), ("All files", "*.*")],
+            title="Create New Database"
+        )
+        if file_path:
+            self._viewer_tab._init_database(db_path=file_path)
+            filename = file_path.split('\\')[-1] if '\\' in file_path else file_path.split('/')[-1]
+            self._viewer_tab._update_db_status(f"({filename})")
+            messagebox.showinfo("Database", f"Created persistent database at:\n{file_path}")
+
+    def _db_open_file(self) -> None:
+        """Open an existing database file."""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("SQLite Database", "*.db"), ("All files", "*.*")],
+            title="Open Existing Database"
+        )
+        if file_path:
+            try:
+                self._viewer_tab._init_database(db_path=file_path)
+                filename = file_path.split('\\')[-1] if '\\' in file_path else file_path.split('/')[-1]
+                self._viewer_tab._update_db_status(f"({filename})")
+                messagebox.showinfo("Database", f"Opened database:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to open database:\n{e}")
+
+    def _db_close(self) -> None:
+        """Close the current database."""
+        self._viewer_tab._close_database()
+        messagebox.showinfo("Database", "Database closed")
 
 
 # ---------------------------------------------------------------------------
