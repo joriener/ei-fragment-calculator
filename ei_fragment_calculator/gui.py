@@ -1475,13 +1475,16 @@ class _SDFViewerTab(ttk.Frame):
             db_fr.grid(row=1, column=0, columnspan=4, sticky=tk.EW, pady=(6, 0))
             db_fr.columnconfigure(2, weight=1)
 
-            ttk.Checkbutton(db_fr, text="Save database to file:",
-                           variable=self._persist_db_var).pack(side=tk.LEFT, padx=(0, 6))
+            persist_check = ttk.Checkbutton(db_fr, text="Save database to file:",
+                           variable=self._persist_db_var,
+                           command=self._on_persist_toggled)
+            persist_check.pack(side=tk.LEFT, padx=(0, 6))
 
-            ttk.Button(db_fr, text="Choose Location…",
-                      command=self._choose_db_file).pack(side=tk.LEFT, padx=(0, 6))
+            self._choose_db_btn = ttk.Button(db_fr, text="Choose Location…",
+                      command=self._choose_db_file, state=tk.DISABLED)
+            self._choose_db_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-            self._db_file_label = ttk.Label(db_fr, text="(in-memory)", foreground="#666666")
+            self._db_file_label = ttk.Label(db_fr, text="(in-memory database)", foreground="#666666")
             self._db_file_label.pack(side=tk.LEFT)
 
         except Exception as e:
@@ -1672,6 +1675,16 @@ class _SDFViewerTab(ttk.Frame):
                 print(f"[DEBUG] File exists, loading: {path}")
                 self._load_sdf(path)
 
+    def _on_persist_toggled(self) -> None:
+        """Handle persistent database checkbox toggle."""
+        if self._persist_db_var.get():
+            self._choose_db_btn.config(state=tk.NORMAL)
+            self._db_file_label.config(text="(choose location below)", foreground="#666666")
+        else:
+            self._choose_db_btn.config(state=tk.DISABLED)
+            self._db_path_var.set("")
+            self._db_file_label.config(text="(in-memory database)", foreground="#666666")
+
     def _choose_db_file(self) -> None:
         """Choose location for persistent database file."""
         file_path = filedialog.asksaveasfilename(
@@ -1681,10 +1694,12 @@ class _SDFViewerTab(ttk.Frame):
         )
         if file_path:
             self._db_path_var.set(file_path)
+            filename = file_path.split('\\')[-1] if '\\' in file_path else file_path.split('/')[-1]
             self._db_file_label.config(
-                text=f"({file_path.split('/')[-1]})",
+                text=f"({filename})",
                 foreground="#0066cc"
             )
+            print(f"[DEBUG] Persistent database will be saved to: {file_path}")
 
     def _init_database(self, db_path: str = None) -> None:
         """Initialize SQLite database with 4-table schema."""
