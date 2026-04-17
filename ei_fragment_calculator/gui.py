@@ -1785,13 +1785,22 @@ class _SDFViewerTab(ttk.Frame):
             return peaks
 
         try:
-            # Handle formats like "50 287; 51 144; ..." or "50,287;51,144;..."
-            parts = str(peaks_str).split(";")
+            # Handle multiple formats: newline-separated, semicolon-separated, or comma-separated
+            peaks_str = str(peaks_str).strip()
+
+            # Try newline-separated first (most common in SDF files)
+            if '\n' in peaks_str:
+                parts = peaks_str.split('\n')
+            elif ';' in peaks_str:
+                parts = peaks_str.split(';')
+            else:
+                parts = [peaks_str]
+
             for part in parts:
                 part = part.strip()
                 if not part:
                     continue
-                # Try space-separated first
+                # Try space-separated first (most common)
                 if " " in part:
                     mz_str, intensity_str = part.rsplit(" ", 1)
                 elif "," in part:
