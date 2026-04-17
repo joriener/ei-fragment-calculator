@@ -2448,6 +2448,7 @@ class _SDFViewerTab(ttk.Frame):
             return
 
         record_id = self._current_idx + 1
+        print(f"[DEBUG] _edit_metadata: current_idx={self._current_idx}, record_id={record_id}")
 
         # Create dialog window
         dialog = tk.Toplevel(self)
@@ -2460,7 +2461,9 @@ class _SDFViewerTab(ttk.Frame):
                 "SELECT field_name, field_value FROM metadata WHERE compound_id = ? ORDER BY field_name",
                 (record_id,)
             ).fetchall()
+            print(f"[DEBUG] Retrieved {len(metadata_rows)} metadata rows")
             metadata_dict = {row[0]: row[1] for row in metadata_rows}
+            print(f"[DEBUG] metadata_dict has {len(metadata_dict)} entries")
 
             # Also add main compound fields
             compound_row = self._db_cursor.execute(
@@ -2504,9 +2507,12 @@ class _SDFViewerTab(ttk.Frame):
 
         # Populate tree with metadata
         item_map = {}  # Map tree item ID to field name
+        print(f"[DEBUG] Populating tree with {len(metadata_dict)} items...")
         for idx, (field_name, field_value) in enumerate(sorted(metadata_dict.items())):
             item_id = meta_tree.insert("", tk.END, text=field_name, values=(field_value,))
             item_map[item_id] = field_name
+            print(f"[DEBUG]   Inserted item {idx+1}: {field_name}")
+        print(f"[DEBUG] Tree population complete")
 
         meta_tree.grid(row=0, column=0, sticky=tk.NSEW)
         vsb.grid(row=0, column=1, sticky=tk.NS)
@@ -2660,6 +2666,7 @@ class _SDFViewerTab(ttk.Frame):
             return
 
         record_id = self._current_idx + 1
+        print(f"[DEBUG] _edit_mass_spectrum: current_idx={self._current_idx}, record_id={record_id}")
 
         # Create dialog window
         dialog = tk.Toplevel(self)
@@ -2672,6 +2679,7 @@ class _SDFViewerTab(ttk.Frame):
                 "SELECT mz, intensity, base_peak FROM mass_spectrum WHERE compound_id = ? ORDER BY mz",
                 (record_id,)
             ).fetchall()
+            print(f"[DEBUG] Retrieved {len(peaks_rows)} mass spectrum peaks")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load peaks: {e}")
             dialog.destroy()
@@ -2701,11 +2709,14 @@ class _SDFViewerTab(ttk.Frame):
 
         # Populate tree with peaks
         item_map = {}  # Map tree item ID to peak index
+        print(f"[DEBUG] Populating peaks tree with {len(peaks_rows)} peaks...")
         for idx, (mz, intensity, base_peak) in enumerate(peaks_rows):
             base_mark = "●" if base_peak else "○"
             item_id = peaks_tree.insert("", tk.END, text=str(idx + 1),
                                        values=(f"{mz:.4f}", f"{intensity:.2f}", base_mark))
             item_map[item_id] = {"idx": idx, "mz": mz, "intensity": intensity, "base": base_peak}
+            print(f"[DEBUG]   Inserted peak {idx+1}: m/z={mz:.4f}, intensity={intensity:.2f}")
+        print(f"[DEBUG] Peaks tree population complete")
 
         peaks_tree.grid(row=0, column=0, sticky=tk.NSEW)
         vsb.grid(row=0, column=1, sticky=tk.NS)
