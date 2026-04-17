@@ -420,8 +420,7 @@ class _CalcTab(ttk.Frame):
 
         # Right pane: PanedWindow for Spectrum (top) and Peak Table (bottom)
         right_paned = tk.PanedWindow(content_fr, orient=tk.VERTICAL,
-                                      bg="#e0e0e0", sashwidth=4,
-                                      activerelief=tk.RAISED)
+                                      bg="#e0e0e0", sashwidth=4)
         right_paned.grid(row=0, column=1, sticky=tk.NSEW)
 
         # Upper: Spectrum view
