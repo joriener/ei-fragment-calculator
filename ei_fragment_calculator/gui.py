@@ -294,6 +294,13 @@ class _CalcTab(ttk.Frame):
         self._running  = False
         self._out_sdf  = tk.StringVar()
         self._out_msp  = tk.StringVar()
+        self._parsed_records = []  # Loaded compounds
+        self._current_compound_idx = -1  # Selected compound
+        self._spectrum_fig = None
+        self._spectrum_ax = None
+        self._spectrum_canvas = None
+        self._compounds_tree = None
+        self._peak_table = None
         self._build()
         self._load_settings()
 
@@ -398,6 +405,34 @@ class _CalcTab(ttk.Frame):
                    command=self._open_element_table).pack(side=tk.LEFT)
 
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
+
+        # ── Main Content Area (Compound list, Spectrum, Peak Table) ──────────
+        content_fr = ttk.Frame(self)
+        content_fr.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        content_fr.columnconfigure(0, minsize=150)  # Left pane min width
+        content_fr.columnconfigure(1, weight=1)      # Right pane expands
+        content_fr.rowconfigure(0, weight=1)
+
+        # Left pane: Compound list
+        left_fr = ttk.LabelFrame(content_fr, text=" Compounds ", padding=4)
+        left_fr.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 4))
+        self._build_compound_list(left_fr)
+
+        # Right pane: PanedWindow for Spectrum (top) and Peak Table (bottom)
+        right_paned = tk.PanedWindow(content_fr, orient=tk.VERTICAL,
+                                      bg="#e0e0e0", sashwidth=4,
+                                      activerelief=tk.RAISED)
+        right_paned.grid(row=0, column=1, sticky=tk.NSEW)
+
+        # Upper: Spectrum view
+        spectrum_fr = ttk.LabelFrame(right_paned, text=" Spectrum ", padding=4)
+        self._build_spectrum_canvas(spectrum_fr)
+        right_paned.add(spectrum_fr, height=200, sticky=tk.NSEW)
+
+        # Lower: Peak results table
+        table_fr = ttk.LabelFrame(right_paned, text=" Peak Results ", padding=4)
+        self._build_peak_table(table_fr)
+        right_paned.add(table_fr, height=200, sticky=tk.NSEW)
 
         # ── Run row ──────────────────────────────────────────────────────────
         run_fr = ttk.Frame(self)
@@ -611,6 +646,157 @@ class _CalcTab(ttk.Frame):
             self._adv_frame.pack(fill=tk.X, pady=(0, 6))
             self._adv_open = True
 
+    def _build_compound_list(self, parent: tk.Widget) -> None:
+        """Build the compound list treeview in the left pane."""
+        # Create scrollbar and treeview
+        scrollbar = ttk.Scrollbar(parent)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._compounds_tree = ttk.Treeview(parent, columns=(), show="tree",
+                                            height=20, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self._compounds_tree.yview)
+        self._compounds_tree.pack(fill=tk.BOTH, expand=True)
+
+        self._compounds_tree.bind("<<TreeviewSelect>>", self._on_compound_selected)
+
+    def _build_spectrum_canvas(self, parent: tk.Widget) -> None:
+        """Build the spectrum visualization in the upper right pane."""
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+            self._spectrum_fig, self._spectrum_ax = plt.subplots(figsize=(6, 3), dpi=100)
+            self._spectrum_canvas = FigureCanvasTkAgg(self._spectrum_fig, parent)
+            self._spectrum_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+            # Initial placeholder
+            self._spectrum_ax.text(0.5, 0.5, "Select a compound to view spectrum",
+                                   ha="center", va="center", transform=self._spectrum_ax.transAxes,
+                                   fontsize=10, color="gray")
+            self._spectrum_fig.canvas.draw()
+        except ImportError:
+            # Fallback if matplotlib not available
+            ttk.Label(parent, text="matplotlib not installed\n\nInstall with:\npip install matplotlib",
+                      foreground="#cc0000").pack(fill=tk.BOTH, expand=True)
+            self._spectrum_canvas = None
+            self._spectrum_fig = None
+            self._spectrum_ax = None
+
+    def _build_peak_table(self, parent: tk.Widget) -> None:
+        """Build the mass peak results table in the lower right pane."""
+        cols = ("Input m/z", "Intensity", "Fragment Formula", "Ion m/z",
+                "Delta mass", "DBE", "Filter")
+        widths = [70, 80, 130, 80, 100, 50, 70]
+
+        # Create scrollbars
+        vsb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
+        hsb = ttk.Scrollbar(parent, orient=tk.HORIZONTAL)
+
+        self._peak_table = ttk.Treeview(parent, columns=cols, show="headings",
+                                        height=15, yscrollcommand=vsb.set,
+                                        xscrollcommand=hsb.set)
+        vsb.config(command=self._peak_table.yview)
+        hsb.config(command=self._peak_table.xview)
+
+        # Configure columns
+        for col, width in zip(cols, widths):
+            self._peak_table.heading(col, text=col)
+            self._peak_table.column(col, width=width, minwidth=50)
+
+        # Tag colors
+        self._peak_table.tag_configure("pass", foreground="#007000")
+        self._peak_table.tag_configure("fail", foreground="#cc0000")
+
+        # Layout
+        self._peak_table.grid(row=0, column=0, sticky=tk.NSEW)
+        vsb.grid(row=0, column=1, sticky=tk.NS)
+        hsb.grid(row=1, column=0, sticky=tk.EW)
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+    def _on_compound_selected(self, event) -> None:
+        """Handle compound selection: update spectrum and clear results."""
+        selection = self._compounds_tree.selection()
+        if not selection:
+            return
+
+        item_id = selection[0]
+        # Get the compound index from the item ID
+        try:
+            idx = int(item_id) - 1  # Item IDs are 1-based
+            if 0 <= idx < len(self._parsed_records):
+                self._current_compound_idx = idx
+                record = self._parsed_records[idx]
+
+                # Extract and render spectrum
+                peak_text = record["fields"].get("MASS SPECTRAL PEAKS", "")
+                if peak_text:
+                    from .sdf_parser import parse_peaks_with_intensity
+                    pairs = parse_peaks_with_intensity(peak_text)
+                    if pairs:
+                        mz_vals, intensities = zip(*pairs)
+                        self._render_spectrum(list(mz_vals), list(intensities))
+                    else:
+                        self._clear_spectrum()
+                else:
+                    self._clear_spectrum()
+
+                # Clear results table (show only input peaks)
+                self._peak_table.delete(*self._peak_table.get_children())
+                if peak_text:
+                    from .sdf_parser import parse_peaks_with_intensity
+                    pairs = parse_peaks_with_intensity(peak_text)
+                    for mz, intensity in pairs:
+                        self._peak_table.insert("", tk.END,
+                                               values=(mz, f"{intensity:.0f}",
+                                                       "", "", "", "", ""))
+        except (ValueError, IndexError, KeyError):
+            pass
+
+    def _render_spectrum(self, mz_vals, intensities) -> None:
+        """Render a bar chart of m/z vs intensity."""
+        if not self._spectrum_ax or not mz_vals:
+            return
+
+        self._spectrum_ax.clear()
+        self._spectrum_ax.bar(mz_vals, intensities, color="#0078D4", width=0.8)
+        self._spectrum_ax.set_xlabel("m/z")
+        self._spectrum_ax.set_ylabel("Intensity")
+        self._spectrum_ax.grid(True, alpha=0.3, axis="y")
+        self._spectrum_fig.tight_layout()
+        self._spectrum_canvas.draw()
+
+    def _clear_spectrum(self) -> None:
+        """Clear spectrum and show placeholder."""
+        if not self._spectrum_ax:
+            return
+
+        self._spectrum_ax.clear()
+        self._spectrum_ax.text(0.5, 0.5, "No spectrum data",
+                               ha="center", va="center",
+                               transform=self._spectrum_ax.transAxes,
+                               fontsize=10, color="gray")
+        self._spectrum_fig.canvas.draw()
+
+    def _populate_peak_results(self, results: list[dict]) -> None:
+        """Populate peak table with Exactify results."""
+        # Clear current data
+        for item in self._peak_table.get_children():
+            self._peak_table.delete(item)
+
+        # Add result rows
+        for result in results:
+            tag = "pass" if result.get("filter", "FAIL") == "PASS" else "fail"
+            self._peak_table.insert("", tk.END,
+                                   values=(result.get("input_mz", ""),
+                                           result.get("intensity", ""),
+                                           result.get("formula", ""),
+                                           f"{result.get('ion_mz', ''):.4f}" if result.get('ion_mz') else "",
+                                           f"{result.get('delta_mass', ''):.4f}" if result.get('delta_mass') else "",
+                                           result.get("dbe", ""),
+                                           result.get("filter", "")),
+                                   tags=(tag,))
+
     # ── Settings helpers ─────────────────────────────────────────────────────
 
     def _on_tol_mode(self) -> None:
@@ -771,6 +957,45 @@ class _CalcTab(ttk.Frame):
             self._out_sdf.set(exact_sdf_path(p))
             self._out_msp.set(exact_msp_path(p))
 
+            # Load compounds from input file
+            self._load_compounds_from_file(p)
+
+    def _load_compounds_from_file(self, filepath: str) -> None:
+        """Load compounds from input file and populate compound list."""
+        try:
+            if not filepath or not Path(filepath).exists():
+                self._parsed_records = []
+                self._current_compound_idx = -1
+                if self._compounds_tree:
+                    self._compounds_tree.delete(*self._compounds_tree.get_children())
+                if self._peak_table:
+                    self._peak_table.delete(*self._peak_table.get_children())
+                self._clear_spectrum()
+                return
+
+            from .sdf_parser import parse_sdf
+            self._parsed_records = parse_sdf(filepath)
+            self._current_compound_idx = -1
+
+            # Populate compound list
+            if self._compounds_tree:
+                self._compounds_tree.delete(*self._compounds_tree.get_children())
+                for idx, record in enumerate(self._parsed_records):
+                    compound_name = record.get("name", f"Compound {idx + 1}").strip()
+                    if not compound_name:
+                        compound_name = f"Compound {idx + 1}"
+                    self._compounds_tree.insert("", tk.END, iid=str(idx + 1),
+                                               text=f"{idx + 1}. {compound_name}")
+
+            # Clear peak table and spectrum
+            if self._peak_table:
+                self._peak_table.delete(*self._peak_table.get_children())
+            self._clear_spectrum()
+
+        except Exception as e:
+            self._log.insert(tk.END, f"Error loading compounds: {e}\n", "error")
+            self._log.see(tk.END)
+
     def _open_folder(self) -> None:
         p = self._out_sdf.get()
         if p:
@@ -881,6 +1106,87 @@ class _CalcTab(ttk.Frame):
         out = self._out_sdf.get()
         if not self._no_sdf.get() and out and Path(out).exists():
             self._open_btn.configure(state="normal")
+
+            # Try to populate peak results from output SDF
+            if ok and self._peak_table and self._current_compound_idx >= 0:
+                self._load_results_from_sdf(out, self._current_compound_idx)
+
+    def _load_results_from_sdf(self, output_sdf: str, compound_idx: int) -> None:
+        """Load results from output SDF and populate peak table."""
+        try:
+            from .sdf_parser import parse_sdf
+            from .formula import parse_formula
+            from .calculator import calculate_dbe, ion_mass
+
+            results_records = parse_sdf(output_sdf)
+            if compound_idx >= len(results_records):
+                return
+
+            result_record = results_records[compound_idx]
+            input_record = self._parsed_records[compound_idx]
+
+            # Get input peaks
+            input_peak_text = input_record["fields"].get("MASS SPECTRAL PEAKS", "")
+            from .sdf_parser import parse_peaks_with_intensity
+            input_pairs = parse_peaks_with_intensity(input_peak_text)
+
+            # Get result formula assignments
+            result_formulas = result_record["fields"].get("EXACT MASS FORMULAS", "")
+
+            # Clear and populate peak table
+            self._peak_table.delete(*self._peak_table.get_children())
+
+            if input_pairs:
+                # Build a map of m/z to formula assignments from results
+                formula_map = {}
+                if result_formulas:
+                    # Parse the result format (assumed to be "mz: formula" per line)
+                    for line in result_formulas.split("\n"):
+                        line = line.strip()
+                        if ":" in line:
+                            try:
+                                mz_str, formula_str = line.split(":", 1)
+                                mz = int(mz_str.strip())
+                                formula = formula_str.strip()
+                                if formula not in formula_map.get(mz, []):
+                                    formula_map.setdefault(mz, []).append(formula)
+                            except ValueError:
+                                pass
+
+                # Populate table with input peaks and matched formulas
+                for input_mz, intensity in input_pairs:
+                    formula_list = formula_map.get(int(input_mz), [])
+                    if formula_list:
+                        # Show first matching formula
+                        formula = formula_list[0]
+                        try:
+                            parsed = parse_formula(formula)
+                            exact_mass = ion_mass(parsed)
+                            delta = input_mz - exact_mass
+                            dbe = calculate_dbe(parsed)
+                            tag = "pass"
+                        except Exception:
+                            exact_mass, delta, dbe = "", "", ""
+                            tag = "fail"
+
+                        self._peak_table.insert("", tk.END,
+                                               values=(input_mz, f"{intensity:.0f}",
+                                                       formula,
+                                                       f"{exact_mass:.4f}" if exact_mass else "",
+                                                       f"{delta:.4f}" if delta else "",
+                                                       dbe,
+                                                       "PASS"),
+                                               tags=(tag,))
+                    else:
+                        # No formula found
+                        self._peak_table.insert("", tk.END,
+                                               values=(input_mz, f"{intensity:.0f}",
+                                                       "", "", "", "", "FAIL"),
+                                               tags=("fail",))
+
+        except Exception as e:
+            # Silently fail if results can't be loaded
+            pass
 
     def _open_element_table(self) -> None:
         """Open Element Table as a modal window."""
