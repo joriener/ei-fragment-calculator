@@ -734,6 +734,7 @@ class _CalcTab(ttk.Frame):
                     pairs = parse_peaks_with_intensity(peak_text)
                     if pairs:
                         mz_vals, intensities = zip(*pairs)
+                        self._cleanup_spectrum()
                         self._render_spectrum(list(mz_vals), list(intensities))
                     else:
                         self._clear_spectrum()
@@ -757,25 +758,44 @@ class _CalcTab(ttk.Frame):
         if not self._spectrum_ax or not self._spectrum_fig or not self._spectrum_canvas or not mz_vals:
             return
 
-        self._spectrum_ax.clear()
-        self._spectrum_ax.bar(mz_vals, intensities, color="#0078D4", width=0.8)
-        self._spectrum_ax.set_xlabel("m/z")
-        self._spectrum_ax.set_ylabel("Intensity")
-        self._spectrum_ax.grid(True, alpha=0.3, axis="y")
-        self._spectrum_fig.tight_layout()
-        self._spectrum_canvas.draw()
+        try:
+            self._spectrum_ax.clear()
+            self._spectrum_ax.bar(mz_vals, intensities, color="#0078D4", width=0.8)
+            self._spectrum_ax.set_xlabel("m/z")
+            self._spectrum_ax.set_ylabel("Intensity")
+            self._spectrum_ax.grid(True, alpha=0.3, axis="y")
+            self._spectrum_fig.tight_layout()
+            self._spectrum_canvas.draw()
+        except (AttributeError, RuntimeError, ValueError):
+            pass
 
     def _clear_spectrum(self) -> None:
         """Clear spectrum and show placeholder."""
         if not self._spectrum_ax or not self._spectrum_fig:
             return
 
-        self._spectrum_ax.clear()
-        self._spectrum_ax.text(0.5, 0.5, "No spectrum data",
-                               ha="center", va="center",
-                               transform=self._spectrum_ax.transAxes,
-                               fontsize=10, color="gray")
-        self._spectrum_fig.canvas.draw()
+        try:
+            self._spectrum_ax.clear()
+            self._spectrum_ax.text(0.5, 0.5, "No spectrum data",
+                                   ha="center", va="center",
+                                   transform=self._spectrum_ax.transAxes,
+                                   fontsize=10, color="gray")
+            self._spectrum_fig.canvas.draw()
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _cleanup_spectrum(self) -> None:
+        """Close matplotlib figure to prevent resource leak."""
+        if self._spectrum_fig is not None:
+            try:
+                import matplotlib.pyplot as plt
+                plt.close(self._spectrum_fig)
+            except (ImportError, RuntimeError):
+                pass
+            finally:
+                self._spectrum_fig = None
+                self._spectrum_ax = None
+                self._spectrum_canvas = None
 
     def _populate_peak_results(self, results: list[dict]) -> None:
         """Populate peak table with Exactify results."""
@@ -2050,7 +2070,7 @@ class _SDFViewerTab(ttk.Frame):
             if self._db_conn:
                 try:
                     self._db_conn.close()
-                except:
+                except (sqlite3.Error, AttributeError):
                     pass
 
             # Use provided path or in-memory
@@ -3043,7 +3063,7 @@ class _SDFViewerTab(ttk.Frame):
             compound_name = self._db_cursor.execute(
                 "SELECT name FROM compounds WHERE id = ?", (record_id,)
             ).fetchone()[0]
-        except:
+        except (sqlite3.Error, TypeError, IndexError):
             compound_name = f"Compound {record_id}"
 
         print(f"[DEBUG] _edit_metadata: current_idx={self._current_idx}, record_id={record_id}, name={compound_name}")
@@ -3342,7 +3362,7 @@ class _SDFViewerTab(ttk.Frame):
             compound_name = self._db_cursor.execute(
                 "SELECT name FROM compounds WHERE id = ?", (record_id,)
             ).fetchone()[0]
-        except:
+        except (sqlite3.Error, TypeError, IndexError):
             compound_name = f"Compound {record_id}"
 
         print(f"[DEBUG] _edit_mass_spectrum: current_idx={self._current_idx}, record_id={record_id}, name={compound_name}")
@@ -4574,6 +4594,26 @@ class EIFragmentApp(tk.Tk):
             daemon=True,
         ).start()
 
+        # Setup cleanup on window close
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+    def _on_closing(self) -> None:
+        """Cleanup resources and close application."""
+        try:
+            # Close database connection in SDF viewer tab
+            if hasattr(self, '_viewer_tab') and self._viewer_tab._db_conn:
+                try:
+                    self._viewer_tab._db_conn.close()
+                except (sqlite3.Error, AttributeError):
+                    pass
+            # Close matplotlib figures in calc tab
+            if hasattr(self, '_calc_tab'):
+                self._calc_tab._cleanup_spectrum()
+        except Exception:
+            pass
+        finally:
+            self.destroy()
+
     def _build(self) -> None:
         # ── Menu Bar ──────────────────────────────────────────────────────
         self._menu_bar = tk.Menu(self)
@@ -4973,7 +5013,7 @@ class EIFragmentApp(tk.Tk):
         # Show menu at toolbar button position
         try:
             menu.post(self.winfo_pointerx(), self.winfo_pointery())
-        except:
+        except tk.TclError:
             pass
 
     def _load_recent_file(self, filepath: str) -> None:

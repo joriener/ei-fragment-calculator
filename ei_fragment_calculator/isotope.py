@@ -104,6 +104,8 @@ def isotope_pattern(
             distribution = _convolve(distribution, isotopes, mass_precision)
 
             # Prune very low-abundance peaks to keep memory bounded
+            if not distribution:
+                return []
             max_abund    = max(distribution.values())
             distribution = {
                 m: a

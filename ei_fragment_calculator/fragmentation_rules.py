@@ -32,6 +32,7 @@ from typing import Optional
 
 from .constants import MONOISOTOPIC_MASSES, ELECTRON_MASS
 from .formula import hill_formula
+from . import bond_thermochemistry
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +291,7 @@ def _is_ring_bond(bonds: list, adjacency: dict, a1: int, a2: int,
 # Tier 2 — Fragmentation rule functions
 # ---------------------------------------------------------------------------
 
-def enumerate_homolytic_cleavages(mol_data: dict) -> list[dict]:
+def enumerate_homolytic_cleavages(mol_data: dict, bond_rates: Optional[dict] = None) -> list[dict]:
     """
     Break every non-aromatic, non-ring single bond and enumerate the two
     resulting fragment formulas.
@@ -298,18 +299,22 @@ def enumerate_homolytic_cleavages(mol_data: dict) -> list[dict]:
     Parameters
     ----------
     mol_data : dict  Output of :func:`mol_parser.parse_mol_block_full`.
+    bond_rates : dict, optional  Output of :func:`bond_thermochemistry.compute_bond_rates`.
+                                 If provided, bonds are sorted by dissociation rate.
 
     Returns
     -------
     list[dict]  One entry per cleavable bond::
 
         {
-          "rule":        "homolytic_cleavage",
-          "bond":        (a1_idx, a2_idx),
-          "frag1_comp":  {"C": 4, "H": 9},
-          "frag2_comp":  {"C": 3, "H": 7, "Cl": 1},
-          "frag1_formula": "C4H9",
-          "frag2_formula": "C3H7Cl",
+          "rule":                 "homolytic_cleavage",
+          "bond":                 (a1_idx, a2_idx),
+          "frag1_comp":           {"C": 4, "H": 9},
+          "frag2_comp":           {"C": 3, "H": 7, "Cl": 1},
+          "frag1_formula":        "C4H9",
+          "frag2_formula":        "C3H7Cl",
+          "bond_dissociation_rate": 95,      # [NEW] A1
+          "base_probability":     0.50,      # [NEW] A2
         }
     """
     atoms     = mol_data["atoms"]
@@ -317,6 +322,8 @@ def enumerate_homolytic_cleavages(mol_data: dict) -> list[dict]:
     adjacency = mol_data["adjacency"]
     results: list[dict] = []
 
+    # [NEW] A1: Filter single bonds and sort by dissociation rate (if available)
+    cleavable_bonds = []
     for bond in bonds:
         btype = bond["type"]
         if btype != 1:   # only cleave single bonds
@@ -324,6 +331,15 @@ def enumerate_homolytic_cleavages(mol_data: dict) -> list[dict]:
         a1, a2 = bond["a1"], bond["a2"]
         if _is_ring_bond(bonds, adjacency, a1, a2, len(atoms)):
             continue    # ring bonds don't produce separate fragments on homolysis
+
+        rate = bond_rates.get((a1, a2), 50) if bond_rates else 50
+        cleavable_bonds.append((bond, rate))
+
+    # Sort by rate descending (fastest breaks first)
+    cleavable_bonds.sort(key=lambda x: x[1], reverse=True)
+
+    for bond, rate in cleavable_bonds:
+        a1, a2 = bond["a1"], bond["a2"]
 
         frag1_atoms = _connected_component(adjacency, a1, exclude_edge=(a1, a2))
         frag2_atoms = frozenset(range(len(atoms))) - frag1_atoms
@@ -336,12 +352,14 @@ def enumerate_homolytic_cleavages(mol_data: dict) -> list[dict]:
         frag2_comp = _add_implicit_h(frag2_comp, atoms, bonds, frag2_atoms)
 
         results.append({
-            "rule":          "homolytic_cleavage",
-            "bond":          (a1, a2),
-            "frag1_comp":    frag1_comp,
-            "frag2_comp":    frag2_comp,
-            "frag1_formula": hill_formula(frag1_comp),
-            "frag2_formula": hill_formula(frag2_comp),
+            "rule":                    "homolytic_cleavage",
+            "bond":                    (a1, a2),
+            "frag1_comp":              frag1_comp,
+            "frag2_comp":              frag2_comp,
+            "frag1_formula":           hill_formula(frag1_comp),
+            "frag2_formula":           hill_formula(frag2_comp),
+            "bond_dissociation_rate":  rate,        # [NEW] A1
+            "base_probability":        0.50,        # [NEW] A2
         })
 
     return results
@@ -430,6 +448,7 @@ def apply_alpha_cleavage(mol_data: dict) -> list[dict]:
                     "neutral_frag_comp":      comp_n,
                     "charged_frag_formula":   hill_formula(comp_h),
                     "neutral_frag_formula":   hill_formula(comp_n),
+                    "base_probability":       0.12,  # [NEW] A2
                 })
 
     return results
@@ -501,6 +520,7 @@ def apply_inductive_cleavage(mol_data: dict) -> list[dict]:
                         "neutral_frag_comp":    comp_n,
                         "charged_frag_formula": hill_formula(comp_h),
                         "neutral_frag_formula": hill_formula(comp_n),
+                        "base_probability":     0.05,  # [NEW] A2
                     })
 
     return results
@@ -652,6 +672,7 @@ def apply_mclafferty(mol_data: dict) -> list[dict]:
                         "neutral_comp":     neut_comp,
                         "enol_formula":     hill_formula(enol_comp),
                         "neutral_formula":  hill_formula(neut_comp),
+                        "base_probability": 0.03,  # [NEW] A2
                     })
 
     return results
@@ -706,6 +727,7 @@ def annotate_candidate(
             break
 
     # Check Tier 2 structure-derived fragment formulas
+    matched_frag = None
     if not best_rule and structure_frags:
         for frag in structure_frags:
             for comp_key in ("frag1_comp", "frag2_comp",
@@ -720,6 +742,7 @@ def annotate_candidate(
                     }
                     best_rule = rule_map.get(frag["rule"], frag["rule"])
                     best_desc = "Bond cleavage — see mol block"
+                    matched_frag = frag
                     break
             if best_rule:
                 break
@@ -727,6 +750,14 @@ def annotate_candidate(
     candidate["fragmentation_rule"] = best_rule
     candidate["rule_description"]   = best_desc
     candidate["rule_score"]         = 0.0 if best_rule else 1.0
+
+    # [NEW] A2: Attach reaction probability and bond dissociation rate from matched fragment
+    if matched_frag:
+        if "base_probability" in matched_frag:
+            candidate["base_probability"] = matched_frag["base_probability"]
+        if "bond_dissociation_rate" in matched_frag:
+            candidate["bond_dissociation_rate"] = matched_frag["bond_dissociation_rate"]
+
     # Hard gate: if strict_structure is on, structure_frags is available, and no match, mark as failed
     if strict_structure and structure_frags and not best_rule:
         candidate["filter_passed"] = False
@@ -749,7 +780,13 @@ def get_secondary_fragments(mol_data: dict, primary_frags: list[dict]) -> list[d
     For each primary fragment composition, reconstruct a minimal mol_data
     (atoms = elements × count, no bonds beyond single chain) and apply
     get_structure_fragments() to it. Limit depth to 1 recursive level.
-    Tag results "secondary": True. Merge into whitelist.
+    Tag results "secondary": True.
+
+    [NEW] A4: Multi-step rate tracking
+    Tracks dissociation rates through fragmentation steps:
+    - step_1_rate: dissociation rate for primary fragment bond
+    - step_2_rate: dissociation rate for secondary fragment bond (if applicable)
+    - Shows rate progression through multi-step fragmentation pathways
 
     Parameters
     ----------
@@ -758,13 +795,19 @@ def get_secondary_fragments(mol_data: dict, primary_frags: list[dict]) -> list[d
 
     Returns
     -------
-    list[dict]  Secondary fragment entries, tagged with "secondary": True.
+    list[dict]  Secondary fragment entries, tagged with:
+                  "secondary": True
+                  "step_1_rate": rate of primary bond dissociation (if available)
+                  "step_2_rate": rate of secondary bond dissociation
     """
     results: list[dict] = []
     seen_comps: set = set()
 
     for prim in primary_frags:
-        # Extract primary fragment compositions
+        # Extract primary fragment compositions and rates
+        primary_rate = prim.get("bond_dissociation_rate", 50)  # Default middle-of-scale
+        primary_base_prob = prim.get("base_probability", 0.05)
+
         for comp_key in ("frag1_comp", "frag2_comp",
                          "charged_frag_comp", "neutral_frag_comp", "enol_comp"):
             comp = prim.get(comp_key)
@@ -813,12 +856,40 @@ def get_secondary_fragments(mol_data: dict, primary_frags: list[dict]) -> list[d
                 "adjacency": adj_dict,
             }
 
+            # [NEW] A4: Compute bond rates for secondary fragments (step 2)
+            try:
+                secondary_bond_rates = bond_thermochemistry.compute_bond_rates(
+                    atoms_list, bonds_list, parent_dbe=0.0
+                )
+            except Exception:
+                secondary_bond_rates = {}
+
             # Apply get_structure_fragments() to the minimal mol_data (recursive, depth 1)
             try:
-                secondary = get_structure_fragments(minimal_mol_data)
+                secondary = get_structure_fragments(minimal_mol_data, parent_dbe=0.0, depth=1)
                 for sec_frag in secondary:
                     sec_copy = dict(sec_frag)
                     sec_copy["secondary"] = True
+
+                    # [NEW] A4: Attach step rates
+                    # Step 1: rate of the primary fragment's bond dissociation
+                    sec_copy["step_1_rate"] = primary_rate
+                    sec_copy["step_1_rule"] = prim.get("rule", "unknown")
+
+                    # Step 2: rate of the secondary bond dissociation (from secondary_bond_rates)
+                    bond = sec_frag.get("bond")
+                    if bond and bond in secondary_bond_rates:
+                        sec_copy["step_2_rate"] = secondary_bond_rates[bond]
+                    else:
+                        # Default: if no specific rate, assume medium dissociation
+                        sec_copy["step_2_rate"] = 50
+
+                    # Calculate relative rate (step 2 / step 1)
+                    if primary_rate > 0:
+                        sec_copy["rate_progression"] = sec_copy["step_2_rate"] / primary_rate
+                    else:
+                        sec_copy["rate_progression"] = 1.0
+
                     results.append(sec_copy)
             except Exception:
                 # Silently skip if reconstruction fails
@@ -974,14 +1045,15 @@ def apply_retro_diels_alder(mol_data: dict) -> list[dict]:
                 frag2_comp = _add_implicit_h(frag2_comp, atoms, bonds, frag2_atoms)
 
                 results.append({
-                    "rule":          "retro_diels_alder",
-                    "ring_atoms":    frozenset(ring_list),
-                    "double_bond":   (double_a, double_b),
-                    "cut_bonds":     cut_bonds,
-                    "frag1_comp":    frag1_comp,
-                    "frag2_comp":    frag2_comp,
-                    "frag1_formula": hill_formula(frag1_comp),
-                    "frag2_formula": hill_formula(frag2_comp),
+                    "rule":             "retro_diels_alder",
+                    "ring_atoms":       frozenset(ring_list),
+                    "double_bond":      (double_a, double_b),
+                    "cut_bonds":        cut_bonds,
+                    "frag1_comp":       frag1_comp,
+                    "frag2_comp":       frag2_comp,
+                    "frag1_formula":    hill_formula(frag1_comp),
+                    "frag2_formula":    hill_formula(frag2_comp),
+                    "base_probability": 0.01,  # [NEW] A2
                 })
             except Exception:
                 # Silently skip if fragmentation fails
@@ -994,7 +1066,7 @@ def apply_retro_diels_alder(mol_data: dict) -> list[dict]:
 # Convenience: run all Tier 2 rules on a mol_data dict
 # ---------------------------------------------------------------------------
 
-def get_structure_fragments(mol_data: Optional[dict]) -> list[dict]:
+def get_structure_fragments(mol_data: Optional[dict], parent_dbe: float = 5.0, depth: int = 0) -> list[dict]:
     """
     Run all structure-based fragmentation rules and return the combined list.
 
@@ -1002,6 +1074,8 @@ def get_structure_fragments(mol_data: Optional[dict]) -> list[dict]:
     ----------
     mol_data : dict | None  Output of :func:`mol_parser.parse_mol_block_full`,
                             or None if no structure is available.
+    parent_dbe : float      Degree of unsaturation for the parent (used in A1 bond rate calc).
+    depth : int             Recursion depth (0 = primary, 1+ = secondary). Prevents infinite recursion.
 
     Returns
     -------
@@ -1010,8 +1084,16 @@ def get_structure_fragments(mol_data: Optional[dict]) -> list[dict]:
     if mol_data is None:
         return []
 
+    # [NEW] A1: Compute bond dissociation rates
+    bond_rates = bond_thermochemistry.compute_bond_rates(
+        mol_data.get("atoms", []),
+        mol_data.get("bonds", []),
+        parent_dbe
+    )
+
     results: list[dict] = []
-    results.extend(enumerate_homolytic_cleavages(mol_data))
+    # [NEW] A1: Pass bond_rates to homolytic_cleavages
+    results.extend(enumerate_homolytic_cleavages(mol_data, bond_rates=bond_rates))
     results.extend(apply_alpha_cleavage(mol_data))
     results.extend(apply_inductive_cleavage(mol_data))
     results.extend(apply_mclafferty(mol_data))
@@ -1020,6 +1102,8 @@ def get_structure_fragments(mol_data: Optional[dict]) -> list[dict]:
     results.extend(apply_retro_diels_alder(mol_data))
 
     # D1: Add secondary fragmentation (primary frags already collected)
-    results.extend(get_secondary_fragments(mol_data, results))
+    # Only apply at depth 0 to prevent infinite recursion
+    if depth == 0:
+        results.extend(get_secondary_fragments(mol_data, results))
 
     return results

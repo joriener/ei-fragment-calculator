@@ -249,7 +249,7 @@ def parse_peaks_with_intensity(peak_text: str) -> list[tuple[int, float]]:
     else:
         # Odd count: first token may be a peak-count header — skip it
         pairs = [(int(round(tokens[i])), float(tokens[i + 1]))
-                 for i in range(1, len(tokens) - 1, 2)]
+                 for i in range(1, len(tokens), 2) if i + 1 < len(tokens)]
 
     # Average duplicate nominal m/z values
     agg: dict[int, list[float]] = {}

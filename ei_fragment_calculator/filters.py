@@ -491,6 +491,48 @@ def apply_clbr_m2_check(
 # E3: 7 Golden Rules (Kind & Fiehn 2007)
 # ---------------------------------------------------------------------------
 
+def apply_impossible_homoatomic(composition: dict) -> tuple[bool, str]:
+    """
+    Reject homoatomic molecules (single-element formulas) that don't exist.
+
+    Allows: single atoms (H, C, N, O, etc.) and diatomic molecules (N2, O2, etc.).
+    Rejects: triatomic or larger homoatomic molecules that are unstable
+    (N3, N4, O3+, etc.) except those known to be stable (ozone O3 is borderline).
+
+    Parameters
+    ----------
+    composition : dict  Elemental composition.
+
+    Returns
+    -------
+    tuple[bool, str]  (passed, message).
+    """
+    # Count how many different elements are present
+    elements_present = [el for el, cnt in composition.items() if cnt > 0]
+    if len(elements_present) != 1:
+        return True, ""  # Not homoatomic, allow
+
+    element = elements_present[0]
+    total_atoms = composition[element]
+
+    # Single atoms and diatomic molecules are allowed
+    if total_atoms <= 2:
+        return True, ""
+
+    # Known stable triatomic: O3 (ozone) — allow with mild concern
+    if element == "O" and total_atoms == 3:
+        return True, ""  # O3 exists but is rare; not rejected
+
+    # Reject all other homoatomic molecules with 3+ atoms
+    # Examples: N3, N4, S3, P4, etc. are unstable
+    return False, (
+        "Impossible homoatomic molecule: {} ({}×{}). "
+        "Homoatomic molecules with >2 atoms are unstable except O3.".format(
+            element * total_atoms, total_atoms, element
+        )
+    )
+
+
 def apply_golden_rules(composition: dict) -> tuple[bool, str]:
     """
     Apply Kind & Fiehn 2007 heuristic rules for molecular formula validation.
@@ -650,6 +692,12 @@ def run_all_filters(
         if not passed:
             all_passed = False
 
+    # Impossible homoatomic check (always enabled)
+    passed, msg = apply_impossible_homoatomic(composition)
+    details["impossible_homoatomic"] = msg if msg else "OK"
+    if not passed:
+        all_passed = False
+
     # E3: 7 Golden Rules (always enabled, Kind & Fiehn 2007)
     passed, msg = apply_golden_rules(composition)
     details["golden_rules"] = msg if msg else "OK"
@@ -710,3 +758,61 @@ def rank_candidates(candidates: list) -> list:
         return (passed, primary, delta_abs, iso_score)
 
     return sorted(candidates, key=_sort_key)
+
+
+# ---------------------------------------------------------------------------
+# Simple boolean filter wrappers for formula_calculator.py
+# ---------------------------------------------------------------------------
+
+def nitrogen_rule(composition: dict, nominal_mz: int = 0, dbe: float = 0.0) -> bool:
+    """
+    Simple boolean version of apply_nitrogen_rule.
+    Returns True if the nitrogen rule is satisfied.
+    """
+    if not composition:
+        return True
+    if nominal_mz == 0:
+        # Estimate nominal m/z from composition if not provided
+        from .calculator import exact_mass
+        nominal_mz = int(round(exact_mass(composition)))
+    from .calculator import calculate_dbe as calc_dbe
+    if dbe == 0.0:
+        dbe = calc_dbe(composition) or 0.0
+    passed, _ = apply_nitrogen_rule(composition, nominal_mz, dbe)
+    return passed
+
+
+def hd_check(composition: dict, dbe: float, max_ring_ratio: float = 1.0) -> bool:
+    """
+    Simple boolean version of apply_hd_check.
+    Returns True if H-deficiency check is satisfied.
+    """
+    if not composition or dbe is None:
+        return True
+    passed, _ = apply_hd_check(composition, dbe, max_ring_ratio=max_ring_ratio)
+    return passed
+
+
+def lewis_senior(composition: dict, dbe: float = 0.0) -> bool:
+    """
+    Simple boolean version of apply_lewis_senior.
+    Returns True if Lewis & Senior rules are satisfied.
+    """
+    if not composition:
+        return True
+    passed, _ = apply_lewis_senior(composition, dbe)
+    return passed
+
+
+def ring_check(composition: dict, max_dbe: float = None) -> bool:
+    """
+    Simple ring check: DBE must be non-negative and reasonable.
+    Returns True if ring check passes.
+    """
+    if not composition:
+        return True
+    from .calculator import calculate_dbe
+    dbe = calculate_dbe(composition)
+    if dbe is None or dbe < 0:
+        return False
+    return True

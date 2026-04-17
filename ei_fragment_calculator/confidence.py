@@ -584,8 +584,13 @@ def _score_fragmentation(
     """
     Return a 0–1 score based on the fragmentation-rule annotation.
 
+    Incorporates reaction-type probability bonuses (A2):
+    - High-probability reactions (>15%): +0.20 bonus
+    - Medium-probability reactions (5–15%): +0.10 bonus
+    - Low-probability reactions (<5%): 0.0 bonus
+
     0.5  neutral (rules not enabled or no mol_block)
-    1.0  a known EI pathway matched
+    0.7–1.0  pathway matched, with probability-based boost
     0.2  mol_block present + rules enabled + no pathway matched (unlikely)
     """
     if not fragmentation_rules_enabled:
@@ -594,7 +599,16 @@ def _score_fragmentation(
     if rule is None:
         return 0.5  # annotation did not run
     if rule:
-        return 1.0  # matched a pathway
+        # Matched a pathway; apply reaction probability bonus (A2)
+        base_prob = candidate.get("base_probability", 0.05)
+        if base_prob > 0.15:
+            prob_bonus = 0.20
+        elif base_prob > 0.05:
+            prob_bonus = 0.10
+        else:
+            prob_bonus = 0.00
+        # Score: 0.7–1.0 depending on reaction frequency
+        return min(1.0, 0.7 + prob_bonus)
     # No pathway matched
     return 0.2 if has_mol_block else 0.5
 

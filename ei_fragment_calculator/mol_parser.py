@@ -22,6 +22,61 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# Standard valences for common elements in organic chemistry
+ELEMENT_VALENCES = {
+    "H": [1],
+    "C": [4],
+    "N": [3, 5],
+    "O": [2],
+    "S": [2, 4, 6],
+    "P": [3, 5],
+    "F": [1],
+    "Cl": [1],
+    "Br": [1],
+    "I": [1],
+    "B": [3],
+    "Si": [4],
+}
+
+
+def get_valence(element: str) -> int:
+    """
+    Get the primary (most common) valence for an element.
+    For nitrogen and sulfur, returns the neutral valence (3 and 2, respectively).
+    """
+    valences = ELEMENT_VALENCES.get(element, [])
+    return valences[0] if valences else 4  # Default to 4 if unknown
+
+
+def calculate_implicit_hydrogens(atom: dict, degree: int) -> int:
+    """
+    Calculate the number of implicit hydrogens for an atom.
+
+    Parameters
+    ----------
+    atom : dict       Atom dict with "element" and optional "charge"
+    degree : int      Sum of bond orders from explicit bonds
+
+    Returns
+    -------
+    int  Number of implicit hydrogens
+    """
+    element = atom.get("element", "C")
+    charge = atom.get("charge", 0)
+
+    valence = get_valence(element)
+
+    # Adjust valence for charged species
+    # Positive charge reduces hydrogen count, negative charge increases it
+    adjusted_valence = valence - charge
+
+    # Implicit hydrogens = remaining valence after accounting for bonds
+    # degree = sum of bond orders (single=1, double=2, triple=3)
+    implicit_h = max(0, adjusted_valence - degree)
+
+    return implicit_h
+
+
 @dataclass
 class MolInfo:
     """
@@ -187,11 +242,35 @@ def parse_mol_block_full(mol_block: str) -> Optional[dict]:
 
     ring_count = max(0, len(bonds) - len(atoms) + 1)
 
+    # ── Calculate implicit hydrogens and molecular composition ──────────────
+    # Build degree (bond count) for each atom
+    degree = [0] * len(atoms)
+    for bond in bonds:
+        a1 = bond["a1"]
+        a2 = bond["a2"]
+        bond_type = bond["type"]
+        # Each bond contributes its type to the degree (single=1, double=2, etc.)
+        degree[a1] += bond_type
+        degree[a2] += bond_type
+
+    # Add implicit hydrogens to atoms and build composition
+    composition = {}
+    for i, atom in enumerate(atoms):
+        element = atom["element"]
+        implicit_h = calculate_implicit_hydrogens(atom, degree[i])
+        atom["implicit_h"] = implicit_h
+
+        # Add to composition
+        composition[element] = composition.get(element, 0) + 1
+        if implicit_h > 0:
+            composition["H"] = composition.get("H", 0) + implicit_h
+
     return {
-        "atoms":     atoms,
-        "bonds":     bonds,
-        "adjacency": adjacency,
-        "ring_count": ring_count,
+        "atoms":        atoms,
+        "bonds":        bonds,
+        "adjacency":    adjacency,
+        "ring_count":   ring_count,
+        "composition":  composition,  # Molecular formula as dict
     }
 
 

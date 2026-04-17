@@ -556,21 +556,15 @@ def _derive_formula_from_mol(mol_block: str) -> str | None:
 
     Returns Hill-order formula (C first, H second, then alphabetical),
     or None if the MOL block has no atoms or cannot be parsed.
+
+    Includes implicit hydrogens calculated from valence and bond degrees.
     """
     mol_data = parse_mol_block_full(mol_block)
     if mol_data is None:
         return None
 
-    atoms = mol_data.get("atoms", [])
-    if not atoms:
-        return None
-
-    counts: dict[str, int] = {}
-    for atom in atoms:
-        el = atom.get("element", "")
-        if el and el != "R" and el != "*":
-            counts[el] = counts.get(el, 0) + 1
-
+    # Use the composition dict which includes implicit hydrogens
+    counts = mol_data.get("composition", {})
     if not counts:
         return None
 
