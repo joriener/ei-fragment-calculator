@@ -36,6 +36,7 @@ from tkinter import filedialog, font, messagebox, scrolledtext, ttk
 # ---------------------------------------------------------------------------
 # Optional dependencies
 # ---------------------------------------------------------------------------
+
 try:
     import sdf_enricher as _se          # noqa: F401
     _HAS_ENRICHER = True
@@ -177,6 +178,28 @@ class _Settings:
     def get(self, key, default=None):
         """Get setting value with optional default."""
         return self._data.get(key, _FACTORY.get(key, default))
+
+    def add_recent_file(self, filepath: str) -> None:
+        """Add file to recent files list (max 10)."""
+        recent = self.get("recent_files", [])
+        # Remove if already exists
+        if filepath in recent:
+            recent.remove(filepath)
+        # Add to front
+        recent.insert(0, filepath)
+        # Keep only 10 most recent
+        recent = recent[:10]
+        self._data["recent_files"] = recent
+        self.save()
+
+    def get_recent_files(self):
+        """Get list of recent files."""
+        return self.get("recent_files", [])
+
+    def clear_recent_files(self) -> None:
+        """Clear all recent files."""
+        self._data["recent_files"] = []
+        self.save()
 
 
 # ===========================================================================
@@ -355,19 +378,8 @@ class _CalcTab(ttk.Frame):
                   text="Auto-detect HR peaks  \u00b7  \u00b120 ppm  \u00b7  Best-only ON",
                   foreground="#666666").pack(anchor=tk.W)
 
-        # ── Toggle row ───────────────────────────────────────────────────────
-        toggle_fr = ttk.Frame(self)
-        toggle_fr.pack(fill=tk.X, pady=(0, 4))
+        # ── Collapsible advanced container (hidden initially) ────────────────
         self._adv_open = False
-        self._adv_toggle = ttk.Button(toggle_fr, text="\u25b6  Advanced Settings",
-                                      command=self._toggle_advanced)
-        self._adv_toggle.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toggle_fr, text="Save as Default",
-                   command=self._save_defaults).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toggle_fr, text="Reset to Factory",
-                   command=self._reset_defaults).pack(side=tk.LEFT)
-
-        # ── Collapsible advanced container ───────────────────────────────────
         self._adv_container = ttk.Frame(self)
         self._adv_container.pack(fill=tk.X)
         self._adv_frame = ttk.LabelFrame(self._adv_container,
@@ -375,26 +387,15 @@ class _CalcTab(ttk.Frame):
         # do NOT pack self._adv_frame yet — it starts collapsed
         self._build_advanced(self._adv_frame)
 
-        # ── Package status (compact inline row) ──────────────────────────────
-        pkg_fr = ttk.Frame(self)
-        pkg_fr.pack(fill=tk.X, pady=(2, 4))
-        ttk.Label(pkg_fr, text="Packages:", foreground="#666666").pack(
-            side=tk.LEFT, padx=(0, 6))
-        _PKG_STATUS = [
-            ("rdkit",        "RDKit",       "Filter 6 – SMILES/ring validation"),
-            ("sdf_enricher", "sdf-enricher","SDF Enricher tab – fill metadata"),
-            ("splashpy",     "splashpy",    "SPLASH spectral hash"),
-            ("matplotlib",   "matplotlib",  "Workflow diagrams"),
-        ]
-        for imp, label, tip in _PKG_STATUS:
-            ok = importlib.util.find_spec(imp) is not None
-            icon = "\u2713" if ok else "\u2717"
-            color = "#007000" if ok else "#cc0000"
-            lbl = ttk.Label(pkg_fr, text="{} {}".format(icon, label),
-                            foreground=color)
-            lbl.pack(side=tk.LEFT, padx=(0, 12))
-            _tooltip(lbl, "{}\n{}".format(tip,
-                "Installed \u2713" if ok else "Not installed — pip install {}".format(imp)))
+        # ── Button row ───────────────────────────────────────────────────────
+        toggle_fr = ttk.Frame(self)
+        toggle_fr.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(toggle_fr, text="Save as Default",
+                   command=self._save_defaults).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toggle_fr, text="Reset to Factory",
+                   command=self._reset_defaults).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toggle_fr, text="Element Table",
+                   command=self._open_element_table).pack(side=tk.LEFT)
 
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
 
@@ -602,13 +603,12 @@ class _CalcTab(ttk.Frame):
             self._ring.set("0.5")
 
     def _toggle_advanced(self) -> None:
+        """Toggle visibility of Advanced Settings frame."""
         if self._adv_open:
             self._adv_frame.pack_forget()
-            self._adv_toggle.configure(text="\u25b6  Advanced Settings")
             self._adv_open = False
         else:
             self._adv_frame.pack(fill=tk.X, pady=(0, 6))
-            self._adv_toggle.configure(text="\u25bc  Advanced Settings")
             self._adv_open = True
 
     # ── Settings helpers ─────────────────────────────────────────────────────
@@ -881,6 +881,18 @@ class _CalcTab(ttk.Frame):
         out = self._out_sdf.get()
         if not self._no_sdf.get() and out and Path(out).exists():
             self._open_btn.configure(state="normal")
+
+    def _open_element_table(self) -> None:
+        """Open Element Table as a modal window."""
+        modal = tk.Toplevel(self.winfo_toplevel())
+        modal.title("Element Table Editor")
+        modal.geometry("950x500")
+        modal.resizable(True, True)
+        modal.transient(self.winfo_toplevel())
+        modal.grab_set()
+
+        elem_frame = _ElementTab(modal)
+        elem_frame.pack(fill=tk.BOTH, expand=True)
 
 
 # ===========================================================================
@@ -1420,7 +1432,10 @@ class _SDFViewerTab(ttk.Frame):
         self._db_path_var = tk.StringVar()
         self._persist_db_var = tk.BooleanVar(value=False)
         self._db_file_label = None
-        
+
+        # Undo/Redo stack for metadata changes
+        self._undo_redo_stack = _UndoRedoStack(max_size=50)
+
         try:
             self._build()
         except Exception as e:
@@ -1429,32 +1444,17 @@ class _SDFViewerTab(ttk.Frame):
             traceback.print_exc()
 
     def _build(self) -> None:
-        # ── File Selection ─────────────────────────────────────────────────
+        # ── Status Bar (minimal database info) ──────────────────────────────
         try:
-            file_fr = ttk.LabelFrame(self, text=" Load Compound File ", padding=8)
-            file_fr.pack(fill=tk.X, pady=(0, 6))
-            file_fr.columnconfigure(2, weight=1)
+            status_fr = ttk.Frame(self)
+            status_fr.pack(fill=tk.X, pady=(0, 4))
+            status_fr.columnconfigure(1, weight=1)
 
-            # Unified file loader row
-            ttk.Button(file_fr, text="LOAD File", command=self._load_file).grid(
-                row=0, column=0, sticky=tk.W, padx=(0, 4))
-            ttk.Button(file_fr, text="Browse…", command=self._browse_file).grid(
-                row=0, column=1, sticky=tk.W, padx=(0, 4))
-            ttk.Button(file_fr, text="Clear", command=lambda: self._file_path.set("")).grid(
-                row=0, column=2, sticky=tk.W)
-
-            # File path display
-            ttk.Label(file_fr, text="File:").grid(row=1, column=0, sticky=tk.W, pady=(6, 2))
-            ttk.Entry(file_fr, textvariable=self._file_path, state='readonly').grid(
-                row=1, column=1, columnspan=2, sticky=tk.EW, padx=(6, 0))
-
-            # Database status (read-only display, controls in File menu)
-            ttk.Label(file_fr, text="Database:").grid(row=2, column=0, sticky=tk.W, pady=(6, 2))
-            self._db_file_label = ttk.Label(file_fr, text="(in-memory database)", foreground="#666666")
-            self._db_file_label.grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=(6, 0))
-
+            ttk.Label(status_fr, text="Database:").pack(side=tk.LEFT, padx=(0, 6))
+            self._db_file_label = ttk.Label(status_fr, text="(in-memory) | 0 compounds", foreground="#666666")
+            self._db_file_label.pack(side=tk.LEFT)
         except Exception as e:
-            print(f"Error building file selection: {e}")
+            print(f"Error building status bar: {e}")
 
         # ── Main Content Area ──────────────────────────────────────────────
         try:
@@ -1563,53 +1563,21 @@ class _SDFViewerTab(ttk.Frame):
         except Exception as e:
             print(f"Error building mass spectrum panel: {e}")
 
-        # ── Navigation Controls ─────────────────────────────────────────────
+        # ── Minimal Navigation Status Bar ──────────────────────────────────
         try:
             nav_fr = ttk.Frame(self)
-            nav_fr.pack(fill=tk.X, pady=(0, 6))
+            nav_fr.pack(fill=tk.X, pady=(4, 0))
 
-            # Navigation buttons
-            ttk.Button(nav_fr, text="◀ Previous", command=self._prev_record).pack(
-                side=tk.LEFT, padx=(0, 4))
-            ttk.Button(nav_fr, text="Next ▶", command=self._next_record).pack(
-                side=tk.LEFT, padx=(0, 4))
-
-            # Jump to record button
-            ttk.Button(nav_fr, text="Jump to…", command=self._jump_to_record).pack(
-                side=tk.LEFT, padx=(0, 6))
-
-            # Navigation label
+            # Navigation label showing current position
             self._nav_label = ttk.Label(nav_fr, text="", foreground="#666666")
             self._nav_label.pack(side=tk.LEFT, padx=(0, 6))
 
-            # Filter status label
+            # Filter status (hidden by default)
             self._filter_label = ttk.Label(nav_fr, text="", foreground="#0066cc")
-            self._filter_label.pack(side=tk.LEFT, padx=(0, 4))
-
-            # Clear filter button
-            self._clear_filter_btn = ttk.Button(nav_fr, text="Clear Filter",
-                                               command=self._clear_filter, state=tk.DISABLED)
-            self._clear_filter_btn.pack(side=tk.LEFT)
+            self._filter_label.pack(side=tk.LEFT)
 
         except Exception as e:
-            print(f"Error building navigation controls: {e}")
-
-        # ── Export Controls ───────────────────────────────────────────────
-        try:
-            export_fr = ttk.Frame(self)
-            export_fr.pack(fill=tk.X, pady=(6, 0))
-
-            ttk.Label(export_fr, text="Export:", font=("Arial", 9)).pack(
-                side=tk.LEFT, padx=(0, 6))
-
-            ttk.Button(export_fr, text="Structure Images", command=self._export_structure_image).pack(
-                side=tk.LEFT, padx=(0, 4))
-            ttk.Button(export_fr, text="CSV Data", command=self._export_csv).pack(
-                side=tk.LEFT, padx=(0, 4))
-            ttk.Button(export_fr, text="Print", command=self._print_record).pack(
-                side=tk.LEFT)
-        except Exception as e:
-            print(f"Error building export controls: {e}")
+            print(f"Error building navigation bar: {e}")
 
 
     def _browse_file(self) -> None:
@@ -2009,6 +1977,49 @@ class _SDFViewerTab(ttk.Frame):
 
         return peaks
 
+    def _undo(self) -> None:
+        """Undo last metadata change."""
+        if not self._db_conn:
+            return
+
+        action = self._undo_redo_stack.undo()
+        if action:
+            try:
+                # Revert to old value in database
+                self._db_cursor.execute(
+                    "UPDATE metadata SET field_value = ? WHERE compound_id = ? AND field_name = ?",
+                    (action['old_value'], action['compound_id'], action['field_name'])
+                )
+                self._db_conn.commit()
+                # Refresh display
+                self._refresh_record_display()
+            except Exception as e:
+                print(f"[ERROR] Undo failed: {e}")
+
+    def _redo(self) -> None:
+        """Redo last undone change."""
+        if not self._db_conn:
+            return
+
+        action = self._undo_redo_stack.redo()
+        if action:
+            try:
+                # Reapply new value to database
+                self._db_cursor.execute(
+                    "UPDATE metadata SET field_value = ? WHERE compound_id = ? AND field_name = ?",
+                    (action['new_value'], action['compound_id'], action['field_name'])
+                )
+                self._db_conn.commit()
+                # Refresh display
+                self._refresh_record_display()
+            except Exception as e:
+                print(f"[ERROR] Redo failed: {e}")
+
+    def _refresh_record_display(self) -> None:
+        """Refresh the metadata display for current record."""
+        if self._current_idx >= 0 and self._current_idx < len(self._records):
+            self._display_record(self._current_idx)
+
     def _load_sdf(self, path: str) -> None:
         """Parse SDF file and extract records."""
         try:
@@ -2172,6 +2183,9 @@ class _SDFViewerTab(ttk.Frame):
             self._records = list(range(len(records)))
             self._current_idx = 0
             self._populate_compound_list()
+            # Update spectrum analyzer with records
+            if self._spectrum_tab:
+                self._spectrum_tab.set_records(records)
             self._show_record(0, highlight_in_tree=True)
             self._update_nav_label()
             print("[DEBUG] MSPEC loaded and displayed - loading complete!")
@@ -2585,8 +2599,7 @@ class _SDFViewerTab(ttk.Frame):
                         text=f"Found {len(results)} of {total} compounds",
                         foreground="#0066cc"
                     )
-                    # Update filter button and label
-                    self._clear_filter_btn.config(state=tk.NORMAL)
+                    # Update filter label
                     self._filter_label.config(text=f"Filtered: {len(results)} of {total}")
                     # Populate tree with results
                     self._populate_compound_list()
@@ -2612,7 +2625,6 @@ class _SDFViewerTab(ttk.Frame):
     def _clear_filter(self) -> None:
         """Clear current filter and show all records."""
         self._current_query_results = []
-        self._clear_filter_btn.config(state=tk.DISABLED)
         self._filter_label.config(text="")
         self._populate_compound_list()
         if self._records:
@@ -2629,7 +2641,6 @@ class _SDFViewerTab(ttk.Frame):
         if not search_term:
             # Empty search - show all compounds
             self._current_query_results = []
-            self._clear_filter_btn.config(state=tk.DISABLED)
             self._filter_label.config(text="")
             self._search_result_label.config(text="")
             self._populate_compound_list()
@@ -2650,7 +2661,6 @@ class _SDFViewerTab(ttk.Frame):
                     text=f"Found {len(results)} of {total}",
                     foreground="#0066cc"
                 )
-                self._clear_filter_btn.config(state=tk.NORMAL)
                 self._filter_label.config(text=f"Filtered: {len(results)} of {total}")
                 # Populate tree with results
                 self._populate_compound_list()
@@ -2664,6 +2674,56 @@ class _SDFViewerTab(ttk.Frame):
                 self._populate_compound_list()
         except Exception as e:
             self._search_result_label.config(text=f"Error: {str(e)[:20]}", foreground="#cc0000")
+
+    def _enrich_metadata_with_pubchem(self, record_id: int) -> dict:
+        """Fetch PubChem data for a compound and return enriched fields."""
+        try:
+            # Get current compound data
+            compound_row = self._db_cursor.execute(
+                "SELECT name, formula, cas_number, smiles, inchi FROM compounds WHERE id = ?",
+                (record_id,)
+            ).fetchone()
+
+            if not compound_row:
+                messagebox.showerror("Error", "Compound not found in database")
+                return {}
+
+            name, formula, cas_number, smiles, inchi = compound_row
+
+            # Create minimal record for enrichment
+            record = {
+                "name": name or "",
+                "FORMULA": formula or "",
+                "CASNO": cas_number or "",
+                "SMILES": smiles or "",
+                "InChI": inchi or "",
+            }
+
+            try:
+                from sdf_enricher.enricher import EnrichConfig, enrich_records
+
+                # Enrich with PubChem only
+                config = EnrichConfig(pubchem=True, chebi=False, kegg=False, hmdb=False,
+                                      calc_exact_mass=False, calc_splash=False, overwrite=False)
+                enrich_records([record], config=config, verbose=False)
+
+                # Extract enriched fields (only those that were updated)
+                enriched_fields = {}
+                for key in ["FORMULA", "CASNO", "SMILES", "InChI", "PUBCHEM_CID",
+                            "PUBCHEM_NAME", "PUBCHEM_IUPAC", "PUBCHEM_IUPAC_SYSTEMATIC"]:
+                    if key in record and record[key]:
+                        enriched_fields[key] = record[key]
+
+                return enriched_fields
+            except ImportError:
+                messagebox.showwarning("Missing Dependency",
+                    "sdf_enricher package not installed.\n"
+                    "Install with: pip install sdf-enricher")
+                return {}
+        except Exception as e:
+            messagebox.showerror("Enrichment Error", f"Failed to enrich metadata: {str(e)[:200]}")
+            print(f"[ERROR] PubChem enrichment failed: {e}")
+            return {}
 
     def _edit_metadata(self) -> None:
         """Open metadata editor dialog for current record."""
@@ -2860,6 +2920,39 @@ class _SDFViewerTab(ttk.Frame):
             else:
                 del changes["added"][field_name]
 
+        def enrich_from_pubchem():
+            """Fetch PubChem data and fill empty fields."""
+            enriched = self._enrich_metadata_with_pubchem(record_id)
+            if not enriched:
+                messagebox.showinfo("No Data", "Could not fetch PubChem data (compound might need a formula or SMILES)")
+                return
+
+            updated_count = 0
+            for field_name, field_value in enriched.items():
+                # Find if field exists in tree
+                existing_item = None
+                for item in item_map:
+                    if item_map[item] == field_name:
+                        existing_item = item
+                        break
+
+                current_val = None
+                if existing_item:
+                    current_val = meta_tree.item(existing_item, "values")[0]
+
+                # Only fill empty fields
+                if not current_val or not str(current_val).strip():
+                    if existing_item:
+                        meta_tree.item(existing_item, values=(str(field_value),))
+                    else:
+                        item_id = meta_tree.insert("", tk.END, text=field_name, values=(str(field_value),))
+                        item_map[item_id] = field_name
+                    changes["modified"][field_name] = str(field_value)
+                    updated_count += 1
+
+            messagebox.showinfo("Enrichment Complete",
+                f"Filled {updated_count} empty field(s) with PubChem data")
+
         def save_changes(show_message=True):
             """Save all metadata changes to database."""
             if not changes["modified"] and not changes["added"] and not changes["deleted"]:
@@ -2918,6 +3011,7 @@ class _SDFViewerTab(ttk.Frame):
                 messagebox.showerror("Error", f"Failed to save: {e}")
 
         ttk.Button(btn_fr, text="- Delete Field", command=delete_field).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_fr, text="✦ Enrich with PubChem", command=enrich_from_pubchem).pack(side=tk.LEFT, padx=5)
 
         def on_close():
             """Auto-save and close dialog."""
@@ -3707,6 +3801,442 @@ def _startup_check(root: tk.Tk, notebook: ttk.Notebook,
 
 
 # ===========================================================================
+# Undo/Redo Stack
+# ===========================================================================
+
+class _UndoRedoStack:
+    """Stack-based undo/redo system for metadata changes."""
+
+    def __init__(self, max_size: int = 50):
+        self.max_size = max_size
+        self.undo_stack = []
+        self.redo_stack = []
+
+    def push(self, compound_id: int, field_name: str, old_value: str, new_value: str) -> None:
+        """Record a metadata change."""
+        action = {
+            "compound_id": compound_id,
+            "field_name": field_name,
+            "old_value": old_value,
+            "new_value": new_value
+        }
+        self.undo_stack.append(action)
+        # Trim if exceeds max size
+        if len(self.undo_stack) > self.max_size:
+            self.undo_stack.pop(0)
+        # Clear redo stack on new action
+        self.redo_stack.clear()
+
+    def undo(self):
+        """Pop from undo stack, push to redo stack."""
+        if self.undo_stack:
+            action = self.undo_stack.pop()
+            self.redo_stack.append(action)
+            return action
+        return None
+
+    def redo(self):
+        """Pop from redo stack, push to undo stack."""
+        if self.redo_stack:
+            action = self.redo_stack.pop()
+            self.undo_stack.append(action)
+            return action
+        return None
+
+    def can_undo(self) -> bool:
+        return len(self.undo_stack) > 0
+
+    def can_redo(self) -> bool:
+        return len(self.redo_stack) > 0
+
+
+# ===========================================================================
+# Keyboard Manager
+# ===========================================================================
+
+class _KeyboardManager:
+    """Centralized keyboard binding handler."""
+
+    def __init__(self, root: tk.Widget, callback_fn):
+        """Initialize keyboard manager with root window and callback."""
+        self.root = root
+        self.callback = callback_fn
+        self.bindings = {
+            "<Control-l>": "load_file",
+            "<Control-e>": "open_enrichment",
+            "<Control-t>": "open_element_table",
+            "<Control-s>": "save_file",
+            "<Control-o>": "open_database",
+            "<Control-n>": "new_database",
+            "<Control-q>": "quit",
+            "<Control-h>": "show_help",
+            "<Control-z>": "undo",
+            "<Control-y>": "redo",
+        }
+
+    def setup_bindings(self) -> None:
+        """Register all keyboard bindings."""
+        for key, command in self.bindings.items():
+            self.root.bind(key, lambda e, cmd=command: self.callback(cmd))
+
+
+# ===========================================================================
+# Status Bar Widget
+# ===========================================================================
+
+class _StatusBar(ttk.Frame):
+    """Status bar showing database and operation state."""
+
+    def __init__(self, parent):
+        super().__init__(parent, relief=tk.SUNKEN, height=25)
+        self.pack_propagate(False)
+
+        # Database label
+        self._db_label = ttk.Label(self, text="Database: [None]", relief=tk.FLAT)
+        self._db_label.pack(side=tk.LEFT, padx=5)
+
+        # Separator
+        ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=2)
+
+        # Compound count label
+        self._count_label = ttk.Label(self, text="Compounds: 0")
+        self._count_label.pack(side=tk.LEFT, padx=5)
+
+        # Separator
+        ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=2)
+
+        # Last action label
+        self._action_label = ttk.Label(self, text="Ready")
+        self._action_label.pack(side=tk.LEFT, padx=5)
+
+        # Separator
+        ttk.Separator(self, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=2)
+
+        # Timestamp label
+        self._time_label = ttk.Label(self, text="", foreground="#666666")
+        self._time_label.pack(side=tk.LEFT, padx=5)
+
+    def set_database(self, db_path: str) -> None:
+        """Update database display."""
+        if not db_path or db_path == ":memory:":
+            self._db_label.config(text="Database: [In-Memory]")
+        else:
+            from pathlib import Path
+            name = Path(db_path).name
+            self._db_label.config(text=f"Database: {name}")
+
+    def set_compound_count(self, count: int) -> None:
+        """Update compound count display."""
+        self._count_label.config(text=f"Compounds: {count}")
+
+    def set_last_action(self, action: str) -> None:
+        """Update last action with timestamp."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._action_label.config(text=action)
+        self._time_label.config(text=timestamp)
+
+
+# ===========================================================================
+# Database Manager
+# ===========================================================================
+
+class _DatabaseManager:
+    """Manage database backup and restore operations."""
+
+    def __init__(self):
+        from pathlib import Path
+        self.backup_dir = Path.home() / ".ei_fragment_calculator_backups"
+        self.backup_dir.mkdir(exist_ok=True)
+
+    def backup(self, db_path: str, custom_dir: str = None) -> str:
+        """Create timestamped backup of database."""
+        from pathlib import Path
+        from datetime import datetime
+        import shutil
+
+        source = Path(db_path)
+        if not source.exists():
+            raise FileNotFoundError(f"Database not found: {db_path}")
+
+        backup_dir = Path(custom_dir) if custom_dir else self.backup_dir
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"{source.stem}_backup_{timestamp}.db"
+        backup_path = backup_dir / backup_name
+
+        shutil.copy2(source, backup_path)
+        return str(backup_path)
+
+    def restore(self, backup_path: str, target_db_path: str) -> None:
+        """Restore database from backup."""
+        from pathlib import Path
+        from datetime import datetime
+        import shutil
+
+        backup = Path(backup_path)
+        target = Path(target_db_path)
+
+        if not backup.exists():
+            raise FileNotFoundError(f"Backup not found: {backup_path}")
+
+        # Create safety backup of current database
+        if target.exists():
+            safety_backup = target.parent / f"{target.stem}_before_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            shutil.copy2(target, safety_backup)
+
+        # Restore from backup
+        shutil.copy2(backup, target)
+
+    def list_backups(self, db_name: str):
+        """List available backups for a database."""
+        backups = list(self.backup_dir.glob(f"{db_name}_backup_*.db"))
+        return sorted([str(b) for b in backups], reverse=True)
+
+    def cleanup_old_backups(self, max_count: int = 10):
+        """Keep only most recent N backups."""
+        all_backups = sorted(
+            self.backup_dir.glob("*_backup_*.db"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
+        for backup in all_backups[max_count:]:
+            backup.unlink()
+
+
+# ===========================================================================
+# Batch Import Dialog
+# ===========================================================================
+
+class _BatchImportDialog(tk.Toplevel):
+    """Modal dialog for batch importing multiple files."""
+
+    def __init__(self, parent, callback_fn):
+        super().__init__(parent)
+        self.title("Batch Import Files")
+        self.geometry("500x400")
+        self.resizable(True, True)
+        self.transient(parent)
+        self.grab_set()
+
+        self.callback = callback_fn
+        self.files = []
+        self.result = None
+
+        # File list frame
+        list_frame = ttk.LabelFrame(self, text="Files to Import", padding=5)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Listbox with scrollbar
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.file_list = tk.Listbox(list_frame, yscrollcommand=scrollbar.set)
+        self.file_list.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.file_list.yview)
+
+        # Buttons frame
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(btn_frame, text="Add Files", command=self._add_files).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="Remove Selected", command=self._remove_selected).pack(side=tk.LEFT, padx=2)
+
+        # Options frame
+        opt_frame = ttk.LabelFrame(self, text="Import Mode", padding=5)
+        opt_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.merge_var = tk.BooleanVar(value=True)
+        ttk.Radiobutton(opt_frame, text="Merge with existing compounds", variable=self.merge_var, value=True).pack(anchor=tk.W)
+        ttk.Radiobutton(opt_frame, text="Replace all compounds", variable=self.merge_var, value=False).pack(anchor=tk.W)
+
+        # Progress frame
+        prog_frame = ttk.Frame(self)
+        prog_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.progress = ttk.Progressbar(prog_frame, mode='determinate')
+        self.progress.pack(fill=tk.X)
+
+        self.status_label = ttk.Label(prog_frame, text="")
+        self.status_label.pack(anchor=tk.W)
+
+        # Action buttons
+        action_frame = ttk.Frame(self)
+        action_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(action_frame, text="Import", command=self._import_files).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=2)
+
+    def _add_files(self):
+        """Add files to import list."""
+        files = filedialog.askopenfilenames(
+            title="Select Files to Import",
+            filetypes=[
+                ("All Supported", ("*.sdf", "*.mspec", "*.msp", "*.csv")),
+                ("SDF Files", "*.sdf"),
+                ("MSPEC Files", ("*.mspec", "*.msp")),
+                ("CSV Files", "*.csv"),
+                ("All Files", "*.*"),
+            ]
+        )
+        for f in files:
+            if f not in self.files:
+                self.files.append(f)
+                from pathlib import Path
+                self.file_list.insert(tk.END, Path(f).name)
+
+    def _remove_selected(self):
+        """Remove selected files from list."""
+        selection = self.file_list.curselection()
+        for idx in reversed(selection):
+            self.file_list.delete(idx)
+            if idx < len(self.files):
+                self.files.pop(idx)
+
+    def _import_files(self):
+        """Start batch import in background thread."""
+        if not self.files:
+            messagebox.showwarning("No Files", "Please select files to import")
+            return
+
+        # Clear if replacing
+        if not self.merge_var.get():
+            self.callback("clear_database")
+
+        # Run import in thread
+        self.progress.config(maximum=len(self.files))
+        self._import_worker_thread()
+
+    def _import_worker_thread(self):
+        """Background import worker."""
+        for i, filepath in enumerate(self.files):
+            try:
+                self.callback("load_batch_file", filepath)
+                self.progress['value'] = i + 1
+                self.status_label.config(text=f"Imported {i+1}/{len(self.files)}")
+                self.update_idletasks()
+            except Exception as e:
+                self.status_label.config(text=f"Error: {str(e)}")
+                return
+
+        messagebox.showinfo("Complete", f"Successfully imported {len(self.files)} file(s)")
+        self.destroy()
+
+
+# ===========================================================================
+# Toolbar Widget
+# ===========================================================================
+
+class _ToolBar(ttk.Frame):
+    """Horizontal compact toolbar with organized command groups."""
+
+    def __init__(self, master, callback_fn=None):
+        super().__init__(master)
+        self.callback = callback_fn
+
+        # Configure background
+        style = ttk.Style()
+        style.configure('Toolbar.TFrame', background='#f0f0f0')
+        self.config(style='Toolbar.TFrame')
+
+        # Main toolbar frame
+        main_frame = ttk.Frame(self, style='Toolbar.TFrame')
+        main_frame.pack(fill=tk.X, padx=2, pady=4)
+
+        # File Operations Group
+        self._add_button_group(main_frame, "File", [
+            ("Browse", "browse_file", "Browse file (Ctrl+B)"),
+            ("Load", "load_file", "Load SDF/MSPEC file (Ctrl+L)"),
+            ("Save", "save_file", "Save compounds (Ctrl+S)"),
+            ("Clear", "clear_compounds", "Clear all compounds"),
+            ("Recent", "show_recent_files", "Show recent files"),
+            ("Batch", "batch_import", "Batch import multiple files"),
+        ])
+
+        # Separator
+        ttk.Separator(main_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
+
+        # Import/Data Group
+        self._add_button_group(main_frame, "Import", [
+            ("CSV", "import_csv", "Import compounds from CSV"),
+            ("RI/RT", "import_ri_rt", "Import retention indices/times"),
+            ("SIM", "import_sim", "Import selected ion monitoring"),
+            ("MRM", "import_mrm", "Import multiple reaction monitoring"),
+        ])
+
+        # Separator
+        ttk.Separator(main_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
+
+        # Enrichment Group
+        self._add_button_group(main_frame, "Enrich", [
+            ("Enrichment", "open_enrichment", "Open enrichment controls (Ctrl+E)"),
+        ])
+
+        # Separator
+        ttk.Separator(main_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
+
+        # View/Display Group
+        self._add_button_group(main_frame, "View", [
+            ("Full", "layout_full", "Show all panels"),
+            ("Spectrum", "layout_spectrum", "Spectrum view only"),
+            ("Metadata", "toggle_metadata", "Toggle metadata panel"),
+            ("Refresh", "refresh_view", "Refresh display"),
+        ])
+
+        # Separator
+        ttk.Separator(main_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
+
+        # Database Group
+        self._add_button_group(main_frame, "Database", [
+            ("New", "new_database", "Create new database (Ctrl+N)"),
+            ("Open", "open_database", "Open existing database (Ctrl+O)"),
+            ("In-Memory", "in_memory_db", "Use in-memory database"),
+            ("Close", "close_database", "Close database"),
+            ("Backup", "backup_database", "Backup current database"),
+            ("Restore", "restore_database", "Restore from backup"),
+        ])
+
+        # Spacer (stretch remaining space)
+        ttk.Frame(main_frame).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Help/Settings (right-aligned)
+        self._add_button_group(main_frame, "Settings", [
+            ("Preferences", "preferences", "Application preferences"),
+        ])
+
+    def _add_button_group(self, parent, label, buttons):
+        """Add a group of buttons with optional label and tooltips."""
+        group = ttk.Frame(parent)
+        group.pack(side=tk.LEFT, padx=2)
+
+        # Group label
+        if label:
+            lbl = ttk.Label(group, text=label + ":", font=("Segoe UI", 8, "bold"))
+            lbl.pack(side=tk.LEFT, padx=(0, 4))
+
+        # Buttons
+        for item in buttons:
+            if len(item) == 3:
+                btn_label, command, tooltip = item
+            else:
+                btn_label, command = item
+                tooltip = None
+
+            btn = ttk.Button(
+                group,
+                text=btn_label,
+                width=8,
+                command=lambda cmd=command: self.callback(cmd)
+            )
+            btn.pack(side=tk.LEFT, padx=1)
+
+            # Add tooltip if provided
+            if tooltip:
+                _tooltip(btn, tooltip)
+
+
+# ===========================================================================
 # Main application window
 # ===========================================================================
 
@@ -3728,6 +4258,7 @@ class EIFragmentApp(tk.Tk):
         _apply_style()
 
         self._settings = _Settings()
+        self._db_manager = _DatabaseManager()
         self._build()
 
         # Startup check in background
@@ -3740,43 +4271,19 @@ class EIFragmentApp(tk.Tk):
 
     def _build(self) -> None:
         # ── Menu Bar ──────────────────────────────────────────────────────
-        menubar = tk.Menu(self)
-        self.config(menu=menubar)
+        self._menu_bar = tk.Menu(self)
+        self.config(menu=self._menu_bar)
+        self._adv_menu = tk.Menu(self._menu_bar, tearoff=False)
+        self._menu_bar.add_cascade(label="Advanced Settings", menu=self._adv_menu)
+        self._adv_menu_visible = False
 
-        # DATABASE MENU
-        db_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Database", menu=db_menu)
-        db_menu.add_command(label="Open Database", command=self._db_open_file)
-        db_menu.add_command(label="Create New Database", command=self._db_new_file)
-        db_menu.add_command(label="Use In-Memory Database", command=self._db_new_in_memory)
-        db_menu.add_command(label="Save as Database", command=self._db_save_as)
-        db_menu.add_separator()
-        db_menu.add_command(label="Close Database", command=self._db_close)
-        db_menu.add_separator()
-        db_menu.add_command(label="Exit", command=self.quit)
+        # ── Toolbar ───────────────────────────────────────────────────────
+        self._ribbon = _ToolBar(self, callback_fn=self._on_ribbon_command)
+        self._ribbon.pack(fill=tk.X, padx=2, pady=2)
 
-        # COMPOUNDS MENU
-        comp_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Compounds", menu=comp_menu)
-        comp_menu.add_command(label="Browse Compound File", command=self._browse_compound_file)
-        comp_menu.add_command(label="Load Compound File", command=self._load_compound_file)
-        comp_menu.add_command(label="Save Compound File", command=self._save_compound_file)
-        comp_menu.add_separator()
-        comp_menu.add_command(label="Clear", command=self._clear_compounds)
-
-        # IMPORT DATA MENU
-        import_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Import Data", menu=import_menu)
-        import_menu.add_command(label="Enrich from PubChem", command=self._import_pubchem)
-        import_menu.add_command(label="Import from CSV", command=self._import_csv)
-        import_menu.add_command(label="Import RI/RT Data", command=self._import_ri_rt)
-        import_menu.add_command(label="Import SIM Information", command=self._import_sim)
-        import_menu.add_command(label="Import MRM Information", command=self._import_mrm)
-
-        # SETTINGS MENU
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Settings", menu=settings_menu)
-        settings_menu.add_command(label="Save Settings as Defaults", command=self._save_settings_defaults)
+        # ── Keyboard Manager ──────────────────────────────────────────────
+        self._keyboard_manager = _KeyboardManager(self, self._on_ribbon_command)
+        self._keyboard_manager.setup_bindings()
 
         # ── Banner (shown when optional packages are missing) ─────────────
         self._banner_var = tk.StringVar()
@@ -3790,21 +4297,226 @@ class EIFragmentApp(tk.Tk):
         # ── Notebook ──────────────────────────────────────────────────────
         self._nb = nb = ttk.Notebook(self)
         nb.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         calc_tab = _CalcTab(nb, self._settings)
         nb.add(calc_tab, text="  Fragment Calculator  ")
+        self._calc_tab = calc_tab
 
-        elem_tab = _ElementTab(nb)
-        nb.add(elem_tab, text="  Element Table  ")
-
-        self._enrich_tab = _EnrichTab(nb, self._settings)
-        nb.add(self._enrich_tab, text="  SDF Enricher  ")
+        self._enrich_tab = _EnrichTab(tk.Frame(self), self._settings)
 
         self._viewer_tab = _SDFViewerTab(nb)
         nb.add(self._viewer_tab, text="  Compound Database  ")
 
         pkg_tab = _PackagesTab(nb)
         nb.add(pkg_tab, text="  Packages  ")
+
+        # ── Status Bar ────────────────────────────────────────────────────
+        self._status_bar = _StatusBar(self)
+        self._status_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=0, pady=0)
+
+        # ── Initial tab visibility ────────────────────────────────────────
+        self._on_tab_changed(None)
+
+    def _on_ribbon_command(self, command: str) -> None:
+        """Handle ribbon button clicks."""
+        # File operations (HOME tab)
+        if command == "browse_file":
+            self._browse_compound_file()
+        elif command == "load_file":
+            self._load_compound_file()
+        elif command == "save_file":
+            self._save_compound_file()
+        elif command == "clear_compounds":
+            self._clear_compounds()
+        elif command == "show_recent_files":
+            self._show_recent_files_menu()
+        elif command == "batch_import":
+            self._open_batch_import_dialog()
+
+        # Compound operations (HOME tab)
+        elif command == "add_compound":
+            messagebox.showinfo("Add Compound", "Add compound functionality coming soon.")
+        elif command == "edit_compound":
+            if hasattr(self._viewer_tab, '_edit_metadata'):
+                self._viewer_tab._edit_metadata()
+        elif command == "delete_compound":
+            messagebox.showinfo("Delete Compound", "Delete compound functionality coming soon.")
+        elif command == "duplicate_compound":
+            messagebox.showinfo("Duplicate Compound", "Duplicate compound functionality coming soon.")
+
+        # Import operations (DATA tab)
+        elif command == "import_csv":
+            self._import_csv()
+        elif command == "import_ri_rt":
+            self._import_ri_rt()
+        elif command == "import_sim":
+            self._import_sim()
+        elif command == "import_mrm":
+            self._import_mrm()
+
+        # Enrichment operations (DATA tab)
+        elif command == "open_enrichment":
+            self._open_enrichment_modal()
+
+        # View operations (VIEW tab)
+        elif command == "layout_full":
+            messagebox.showinfo("Full View", "Full view layout coming soon.")
+        elif command == "layout_spectrum":
+            messagebox.showinfo("Spectrum Only", "Spectrum-only layout coming soon.")
+        elif command == "toggle_metadata":
+            messagebox.showinfo("Toggle Metadata", "Toggle metadata panel functionality coming soon.")
+        elif command == "refresh_view":
+            self._viewer_tab._populate_compound_list()
+        elif command == "zoom_in":
+            messagebox.showinfo("Zoom In", "Zoom functionality coming soon.")
+        elif command == "zoom_out":
+            messagebox.showinfo("Zoom Out", "Zoom functionality coming soon.")
+        elif command == "grid_view":
+            messagebox.showinfo("Grid View", "Grid view functionality coming soon.")
+
+        # Database operations (SETTINGS tab)
+        elif command == "new_database":
+            self._db_new_file()
+        elif command == "open_database":
+            self._db_open_file()
+        elif command == "close_database":
+            self._db_close()
+        elif command == "in_memory_db":
+            self._db_new_in_memory()
+        elif command == "backup_database":
+            self._backup_database()
+        elif command == "restore_database":
+            self._restore_database()
+
+        # Application settings (SETTINGS tab)
+        elif command == "save_defaults":
+            self._save_settings_defaults()
+        elif command == "preferences":
+            messagebox.showinfo("Preferences", "Preferences dialog coming soon.")
+        elif command == "database_info":
+            messagebox.showinfo("Database Info", "Database info coming soon.")
+
+        # Undo/Redo operations
+        elif command == "undo":
+            if hasattr(self._viewer_tab, '_undo'):
+                self._viewer_tab._undo()
+                if hasattr(self, '_status_bar') and self._viewer_tab._undo_redo_stack.can_undo():
+                    self._status_bar.set_last_action("Undo performed")
+        elif command == "redo":
+            if hasattr(self._viewer_tab, '_redo'):
+                self._viewer_tab._redo()
+                if hasattr(self, '_status_bar') and self._viewer_tab._undo_redo_stack.can_redo():
+                    self._status_bar.set_last_action("Redo performed")
+
+        # Navigation and help
+        elif command == "open_element_table":
+            if hasattr(self._calc_tab, '_open_element_table'):
+                self._calc_tab._open_element_table()
+        elif command == "show_help":
+            messagebox.showinfo("Help", "Help documentation coming soon.")
+        elif command == "quit":
+            self.quit()
+
+    def _on_tab_changed(self, event) -> None:
+        """Handle tab changes to show/hide toolbar and Advanced Settings menu."""
+        try:
+            current_tab_idx = self._nb.index(self._nb.select())
+            current_tab_text = self._nb.tab(current_tab_idx, "text").strip()
+
+            # Show toolbar only for Compound Database and Packages tabs
+            if current_tab_text in ["Compound Database", "Packages"]:
+                self._ribbon.pack(fill=tk.X, padx=2, pady=2)
+            else:
+                self._ribbon.pack_forget()
+
+            # Show Advanced Settings menu only for Fragment Calculator tab
+            if current_tab_text == "Fragment Calculator":
+                if not self._adv_menu_visible:
+                    self._populate_adv_menu()
+                    self._adv_menu_visible = True
+            else:
+                if self._adv_menu_visible:
+                    self._adv_menu.delete(0, tk.END)
+                    self._adv_menu_visible = False
+        except Exception:
+            pass
+
+    def _populate_adv_menu(self) -> None:
+        """Populate the Advanced Settings menu with controls."""
+        self._adv_menu.add_command(
+            label="Show / Hide Settings Panel",
+            command=self._toggle_adv_panel
+        )
+
+    def _toggle_adv_panel(self) -> None:
+        """Toggle Advanced Settings panel visibility in Fragment Calculator tab."""
+        if hasattr(self._calc_tab, '_toggle_advanced'):
+            self._calc_tab._toggle_advanced()
+
+    def _open_batch_import_dialog(self) -> None:
+        """Open batch import dialog."""
+        dialog = _BatchImportDialog(self, self._on_batch_import_command)
+
+    def _on_batch_import_command(self, command: str, *args) -> None:
+        """Handle batch import dialog commands."""
+        if command == "load_batch_file":
+            filepath = args[0] if args else None
+            if filepath and hasattr(self._viewer_tab, '_load_file_path'):
+                self._viewer_tab._load_file_path(filepath)
+        elif command == "clear_database":
+            self._clear_compounds()
+
+    def _backup_database(self) -> None:
+        """Create backup of current database."""
+        from pathlib import Path
+        current_db = self._viewer_tab._db_path if hasattr(self._viewer_tab, '_db_path') else None
+
+        if not current_db or current_db == ":memory:":
+            messagebox.showinfo("Info", "In-memory databases cannot be backed up")
+            return
+
+        try:
+            backup_path = self._db_manager.backup(current_db)
+            if hasattr(self, '_status_bar'):
+                self._status_bar.set_last_action(f"Database backed up")
+            messagebox.showinfo("Backup Complete", f"Database backed up to:\n{Path(backup_path).name}")
+        except Exception as e:
+            messagebox.showerror("Backup Failed", f"Error backing up database:\n{e}")
+
+    def _restore_database(self) -> None:
+        """Restore database from backup."""
+        from pathlib import Path
+        current_db = self._viewer_tab._db_path if hasattr(self._viewer_tab, '_db_path') else None
+
+        if not current_db or current_db == ":memory:":
+            messagebox.showinfo("Info", "Cannot restore to in-memory database")
+            return
+
+        # Show backup selection dialog
+        backup_path = filedialog.askopenfilename(
+            title="Select Backup to Restore",
+            initialdir=self._db_manager.backup_dir,
+            filetypes=[("Database Backups", "*.db"), ("All Files", "*.*")]
+        )
+
+        if not backup_path:
+            return
+
+        # Confirm restore
+        result = messagebox.askyesno(
+            "Confirm Restore",
+            f"Restore database from backup?\n\nCurrent database will be backed up as safety measure.\n\nBackup: {Path(backup_path).name}"
+        )
+
+        if result:
+            try:
+                self._db_manager.restore(backup_path, current_db)
+                if hasattr(self, '_status_bar'):
+                    self._status_bar.set_last_action("Database restored from backup")
+                messagebox.showinfo("Restore Complete", "Database restored successfully")
+            except Exception as e:
+                messagebox.showerror("Restore Failed", f"Error restoring database:\n{e}")
 
     def _toggle_banner(self, *_) -> None:
         if self._banner_var.get():
@@ -3877,6 +4589,18 @@ class EIFragmentApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save database:\n{e}")
 
+    def _open_enrichment_modal(self) -> None:
+        """Open Enrichment controls as a modal window."""
+        modal = tk.Toplevel(self)
+        modal.title("SDF Enrichment")
+        modal.geometry("900x600")
+        modal.resizable(True, True)
+        modal.transient(self)
+        modal.grab_set()
+
+        enrich_frame = _EnrichTab(modal, self._settings)
+        enrich_frame.pack(fill=tk.BOTH, expand=True)
+
     # Compound file operations
     def _browse_compound_file(self) -> None:
         """Browse and select a compound file."""
@@ -3923,6 +4647,43 @@ class EIFragmentApp(tk.Tk):
                 messagebox.showinfo("Success", "All compounds cleared")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to clear compounds:\n{e}")
+
+    def _show_recent_files_menu(self) -> None:
+        """Display recent files as a dropdown menu."""
+        from pathlib import Path
+        menu = tk.Menu(self, tearoff=0)
+
+        recent = self._settings.get_recent_files()
+        if recent:
+            for filepath in recent:
+                name = Path(filepath).name if Path(filepath).exists() else f"{Path(filepath).name} (missing)"
+                menu.add_command(
+                    label=name,
+                    command=lambda f=filepath: self._load_recent_file(f)
+                )
+            menu.add_separator()
+
+        menu.add_command(label="Clear Recent Files", command=self._settings.clear_recent_files)
+
+        # Show menu at toolbar button position
+        try:
+            menu.post(self.winfo_pointerx(), self.winfo_pointery())
+        except:
+            pass
+
+    def _load_recent_file(self, filepath: str) -> None:
+        """Load a file from recent files list."""
+        from pathlib import Path
+        if not Path(filepath).exists():
+            messagebox.showerror("File Not Found", f"The file no longer exists:\n{filepath}")
+            self._settings.clear_recent_files()
+            return
+
+        # Load the file using the viewer tab's file loader
+        if hasattr(self._viewer_tab, '_load_file_path'):
+            self._viewer_tab._load_file_path(filepath)
+        else:
+            messagebox.showwarning("Not Available", "File loader not available")
 
     # Import data operations
     def _import_pubchem(self) -> None:
