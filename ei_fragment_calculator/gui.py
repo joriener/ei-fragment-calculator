@@ -3743,16 +3743,40 @@ class EIFragmentApp(tk.Tk):
         menubar = tk.Menu(self)
         self.config(menu=menubar)
 
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Create New In-Memory Database", command=self._db_new_in_memory)
-        file_menu.add_command(label="Create New Persistent Database", command=self._db_new_file)
-        file_menu.add_command(label="Open Existing Database", command=self._db_open_file)
-        file_menu.add_separator()
-        file_menu.add_command(label="Close Database", command=self._db_close)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.quit)
+        # DATABASE MENU
+        db_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Database", menu=db_menu)
+        db_menu.add_command(label="Open Database", command=self._db_open_file)
+        db_menu.add_command(label="Create New Database", command=self._db_new_file)
+        db_menu.add_command(label="Use In-Memory Database", command=self._db_new_in_memory)
+        db_menu.add_command(label="Save as Database", command=self._db_save_as)
+        db_menu.add_separator()
+        db_menu.add_command(label="Close Database", command=self._db_close)
+        db_menu.add_separator()
+        db_menu.add_command(label="Exit", command=self.quit)
+
+        # COMPOUNDS MENU
+        comp_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Compounds", menu=comp_menu)
+        comp_menu.add_command(label="Browse Compound File", command=self._browse_compound_file)
+        comp_menu.add_command(label="Load Compound File", command=self._load_compound_file)
+        comp_menu.add_command(label="Save Compound File", command=self._save_compound_file)
+        comp_menu.add_separator()
+        comp_menu.add_command(label="Clear", command=self._clear_compounds)
+
+        # IMPORT DATA MENU
+        import_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Import Data", menu=import_menu)
+        import_menu.add_command(label="Enrich from PubChem", command=self._import_pubchem)
+        import_menu.add_command(label="Import from CSV", command=self._import_csv)
+        import_menu.add_command(label="Import RI/RT Data", command=self._import_ri_rt)
+        import_menu.add_command(label="Import SIM Information", command=self._import_sim)
+        import_menu.add_command(label="Import MRM Information", command=self._import_mrm)
+
+        # SETTINGS MENU
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Settings", menu=settings_menu)
+        settings_menu.add_command(label="Save Settings as Defaults", command=self._save_settings_defaults)
 
         # ── Banner (shown when optional packages are missing) ─────────────
         self._banner_var = tk.StringVar()
@@ -3827,6 +3851,156 @@ class EIFragmentApp(tk.Tk):
         """Close the current database."""
         self._viewer_tab._close_database()
         messagebox.showinfo("Database", "Database closed")
+
+    def _db_save_as(self) -> None:
+        """Save current database as a new file."""
+        if not self._viewer_tab._db_conn:
+            messagebox.showwarning("No Database", "No database is currently open")
+            return
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".db",
+            filetypes=[("SQLite Database", "*.db"), ("All files", "*.*")],
+            title="Save Database As"
+        )
+        if file_path:
+            try:
+                import shutil
+                if hasattr(self._viewer_tab, '_db_path') and self._viewer_tab._db_path:
+                    shutil.copy(self._viewer_tab._db_path, file_path)
+                else:
+                    messagebox.showwarning("In-Memory Database",
+                        "Cannot save in-memory database. Use 'Create New Database' first.")
+                    return
+                filename = file_path.split('\\')[-1] if '\\' in file_path else file_path.split('/')[-1]
+                self._viewer_tab._update_db_status(f"({filename})")
+                messagebox.showinfo("Success", f"Database saved to:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save database:\n{e}")
+
+    # Compound file operations
+    def _browse_compound_file(self) -> None:
+        """Browse and select a compound file."""
+        if hasattr(self._viewer_tab, '_browse_file'):
+            self._viewer_tab._browse_file()
+        else:
+            messagebox.showwarning("Not Available", "File browser not available")
+
+    def _load_compound_file(self) -> None:
+        """Load the selected compound file."""
+        if hasattr(self._viewer_tab, '_load_file'):
+            self._viewer_tab._load_file()
+        else:
+            messagebox.showwarning("Not Available", "File loader not available")
+
+    def _save_compound_file(self) -> None:
+        """Save compounds from database to SDF file."""
+        if not self._viewer_tab._db_conn:
+            messagebox.showwarning("No Database", "No compounds loaded")
+            return
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".sdf",
+            filetypes=[("SDF Files", "*.sdf"), ("All files", "*.*")],
+            title="Save Compounds As"
+        )
+        if file_path:
+            messagebox.showinfo("Saving", "Save functionality coming soon.\n\nUse SDF Enricher tab to export enriched data.")
+
+    def _clear_compounds(self) -> None:
+        """Clear all loaded compounds from the database."""
+        if not self._viewer_tab._db_conn:
+            messagebox.showwarning("No Database", "No database is currently open")
+            return
+        if messagebox.askyesno("Confirm", "Clear all compounds from database? This cannot be undone."):
+            try:
+                self._viewer_tab._db_cursor.execute("DELETE FROM mass_spectrum")
+                self._viewer_tab._db_cursor.execute("DELETE FROM metadata")
+                self._viewer_tab._db_cursor.execute("DELETE FROM compounds")
+                self._viewer_tab._db_conn.commit()
+                self._viewer_tab._records = []
+                self._viewer_tab._current_idx = 0
+                self._viewer_tab._populate_compound_list()
+                self._viewer_tab._clear_record_display()
+                messagebox.showinfo("Success", "All compounds cleared")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to clear compounds:\n{e}")
+
+    # Import data operations
+    def _import_pubchem(self) -> None:
+        """Enrich current compounds from PubChem."""
+        if not self._viewer_tab._db_conn:
+            messagebox.showwarning("No Database", "No compounds loaded. Load compounds first.")
+            return
+        messagebox.showinfo("PubChem Enrichment",
+            "To enrich your compounds with PubChem data:\n\n"
+            "1. Go to the SDF Enricher tab\n"
+            "2. Load an SDF file\n"
+            "3. Select PubChem as a data source\n"
+            "4. Click Enrich\n\n"
+            "Then import the enriched data back into the database.")
+
+    def _import_csv(self) -> None:
+        """Import compound data from CSV file."""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("CSV Files", "*.csv"), ("TSV Files", "*.tsv"), ("All files", "*.*")],
+            title="Select CSV File to Import"
+        )
+        if file_path:
+            messagebox.showinfo("CSV Import",
+                f"Selected: {file_path}\n\n"
+                "CSV import functionality coming soon.\n\n"
+                "Supported columns:\n"
+                "- Name (compound name)\n"
+                "- Formula (molecular formula)\n"
+                "- MW (molecular weight)\n"
+                "- CAS (CAS number)")
+
+    def _import_ri_rt(self) -> None:
+        """Import Retention Index/Time data."""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("CSV Files", "*.csv"), ("TSV Files", "*.tsv"), ("All files", "*.*")],
+            title="Select RI/RT Data File"
+        )
+        if file_path:
+            messagebox.showinfo("RI/RT Import",
+                f"Selected: {file_path}\n\n"
+                "RI/RT data import functionality coming soon.\n\n"
+                "Expected format:\n"
+                "CompoundName, ColumnType, RI_Value, Deviation\n"
+                "Example: Vanillin, StdNP, 1404, 7")
+
+    def _import_sim(self) -> None:
+        """Import SIM (Selected Ion Monitoring) information."""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("CSV Files", "*.csv"), ("Text Files", "*.txt"), ("All files", "*.*")],
+            title="Select SIM Data File"
+        )
+        if file_path:
+            messagebox.showinfo("SIM Import",
+                f"Selected: {file_path}\n\n"
+                "SIM information import coming soon.\n\n"
+                "This will import selected ion monitoring transitions\n"
+                "and fragment masses from your data file.")
+
+    def _import_mrm(self) -> None:
+        """Import MRM (Multiple Reaction Monitoring) information."""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("CSV Files", "*.csv"), ("Text Files", "*.txt"), ("All files", "*.*")],
+            title="Select MRM Data File"
+        )
+        if file_path:
+            messagebox.showinfo("MRM Import",
+                f"Selected: {file_path}\n\n"
+                "MRM information import coming soon.\n\n"
+                "This will import multiple reaction monitoring\n"
+                "transitions for mass spec methods.")
+
+    def _save_settings_defaults(self) -> None:
+        """Save current settings as defaults."""
+        try:
+            self._settings.save()
+            messagebox.showinfo("Success", "Settings saved as defaults")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save settings:\n{e}")
 
 
 # ---------------------------------------------------------------------------
