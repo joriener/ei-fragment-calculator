@@ -10,7 +10,8 @@ Tabs
 2. Element Table        — inline CRUD editor for data/elements.csv
 3. SDF Enricher         — (visible only when sdf-enricher is installed)
 4. SDF Viewer           — browse structures, view metadata, plot mass spectra (requires RDKit, Pillow & Matplotlib)
-5. Packages             — check and auto-install optional dependencies
+5. CEF Viewer           — load CEF files, browse compounds, identify duplicates, consolidate
+6. Packages             — check and auto-install optional dependencies
 
 Launch
 ------
@@ -4652,6 +4653,13 @@ class EIFragmentApp(tk.Tk):
 
         self._viewer_tab = _SDFViewerTab(nb)
         nb.add(self._viewer_tab, text="  Compound Database  ")
+
+        try:
+            from .cef_viewer_tab import CEFViewerTab
+            self._cef_tab = CEFViewerTab(nb, self._settings)
+            nb.add(self._cef_tab, text="  CEF Viewer  ")
+        except Exception as e:
+            print(f"Warning: CEF Viewer tab not available: {e}")
 
         pkg_tab = _PackagesTab(nb)
         nb.add(pkg_tab, text="  Packages  ")
