@@ -85,6 +85,16 @@
 #             (RDKit2DotNet.dll, not RDKit2DotNetStandard.dll -- the
 #             latter does not exist in the package).
 #
+#   v3.3      Accurate-mass support. A "Mass mode" combo selects unit
+#             mass (nominal, the previous and default behaviour) or
+#             accurate mass with a ppm or mDa tolerance. In accurate
+#             mode assign_peak() enumerates a +/-1 nominal window and
+#             keeps only candidates whose electron-corrected exact mass
+#             falls inside the tolerance, so the decimals of the
+#             measured m/z finally do the discriminating instead of
+#             being rounded away. The preview reports the mass error of
+#             each assignment in ppm.
+#
 #   Style     Agilent WinForms Desktop App Style Guide: 56-px brand banner,
 #             version label, banner "?", About dialog with the verbatim
 #             disclaimer, embedded readme, embedded multi-resolution icon,
@@ -148,7 +158,7 @@ from System.Windows.Forms import (
 # =============================================================================
 # Style guide section 11 -- shown in the banner, title bar and MessageBoxes.
 APP_TITLE   = "EI Fragment Calculator"
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 APP_SLUG    = "ei_fragment_calculator"
 
 # Style guide section 2 -- canonical palette, built once and reused.
@@ -2234,6 +2244,20 @@ def pick_best_v3(candidates, parent, target_nom, struct_whitelist,
 # implementation of the pipeline and the preview cannot drift from the
 # conversion.
 
+# --- Accurate-mass matching (new in v3.3) --------------------------------
+# "unit" reproduces v3.0/v3.2 exactly: peaks are rounded to a nominal mass
+# and everything after the decimal point is thrown away. "ppm" and "mda"
+# instead match a candidate's electron-corrected exact mass against the
+# measured m/z, which is the whole point of having accurate-mass spectra.
+DEFAULT_MASS_MODE = "unit"      # "unit" | "ppm" | "mda"
+DEFAULT_TOL_PPM   = 10.0        # +/- ppm in "ppm" mode
+DEFAULT_TOL_MDA   = 5.0         # +/- mDa in "mda" mode
+
+# Nominal masses either side of round(m/z) to enumerate in accurate mode.
+# See find_subformulas_window() for why this cannot be 0.
+ACCURATE_NOMINAL_WINDOW = 1
+
+
 def build_compound_context(parent, mol, filter_flags):
     """Per-compound preparation shared by the conversion and the preview.
 
@@ -2261,35 +2285,109 @@ def build_compound_context(parent, mol, filter_flags):
     return ctx
 
 
+def find_subformulas_window(parent, center_nom, window,
+                            parent_key=None, prep=None):
+    """Union of find_subformulas_cached() over center_nom +/- window.
+
+    Accurate-mass matching cannot enumerate at round(m/z) alone. A formula's
+    NOMINAL mass and round(its EXACT mass) differ by one whenever the mass
+    defect passes 0.5 Da, and that happens well inside the GC-MS range:
+    hydrogen contributes +7.8 mDa each, so C50H100 is nominal 700 but exact
+    700.78, which rounds to 701; bromine contributes -81.7 mDa each and
+    rounds the other way. Both directions occur, so the window is symmetric.
+
+    +/-1 covers organics across this range; raise ACCURATE_NOMINAL_WINDOW
+    for very high mass.
+
+    The cached lists are never mutated -- results are copied into a new list.
+    """
+    out = []
+    lo = center_nom - window
+    if lo < 0:
+        lo = 0
+    for n in range(lo, center_nom + window + 1):
+        out.extend(find_subformulas_cached(parent, n, parent_key, prep))
+    return out
+
+
 def assign_peak(parent, t_nom, ctx, intensity_map, filter_flags,
-                electron_mode):
+                electron_mode, mz=None, mass_mode="unit", mass_tol=0.0):
     """Assign one peak to its best candidate formula.
 
-    Returns (best_formula, exact_mass, n_candidates):
-      best_formula  composition dict, or None if the peak is unassigned
-      exact_mass    electron-corrected exact mass, or None
-      n_candidates  how many physically possible candidates were considered
-                    (callers use > 1 to count ambiguous assignments)
+    Returns (best_formula, exact_mass, n_candidates, mass_error_ppm):
+      best_formula    composition dict, or None if the peak is unassigned
+      exact_mass      electron-corrected exact mass of the winner, or None
+      n_candidates    how many candidates survived filtering (callers use
+                      > 1 to count ambiguous assignments)
+      mass_error_ppm  calculated minus measured, in ppm; None when no
+                      measured m/z was supplied
+
+    Two matching modes:
+
+    "unit" -- the default, and byte-identical to v3.0/v3.2 behaviour.
+        Enumerate sub-formulas whose NOMINAL mass equals t_nom, then rank.
+        The measured m/z is used only to derive t_nom, so everything after
+        the decimal point is discarded.
+
+    "ppm" / "mda" -- accurate mass.
+        Enumerate over a +/-ACCURATE_NOMINAL_WINDOW nominal window, then
+        keep only candidates whose electron-corrected EXACT mass lies within
+        mass_tol of the measured m/z. This is where accurate-mass data pays
+        off: at 10 ppm on a 150 Da ion the window is +/-1.5 mDa, which
+        usually leaves one formula where nominal matching leaves ten.
+
+        Candidates outside tolerance are rejected outright rather than
+        penalised, so the tolerance is the control that matters; within
+        tolerance the existing chemistry score decides. Tighten the
+        tolerance rather than adding filters if assignments stay ambiguous.
 
     Peaks above the molecular ion (+1 for the 13C satellite) are rejected,
-    as are peaks with no candidate whose DBE reaches the -0.5 physical
-    limit.
+    as are peaks with no candidate reaching the -0.5 DBE physical limit.
     """
     if t_nom > ctx['parent_nom'] + 1:
-        return None, None, 0
-    subs  = find_subformulas_cached(
-        parent, t_nom, ctx['parent_key'], ctx['prep'])
-    # Pre-filter: DBE >= -0.5 (the hard physical limit for all ions).
-    valid = [f for f in subs if calc_rdb(f) >= -0.5]
+        return None, None, 0, None
+
+    accurate = (mass_mode in ("ppm", "mda") and mz is not None
+                and mass_tol > 0)
+
+    if not accurate:
+        subs  = find_subformulas_cached(
+            parent, t_nom, ctx['parent_key'], ctx['prep'])
+        # Pre-filter: DBE >= -0.5 (the hard physical limit for all ions).
+        valid = [f for f in subs if calc_rdb(f) >= -0.5]
+    else:
+        subs  = find_subformulas_window(
+            parent, t_nom, ACCURATE_NOMINAL_WINDOW,
+            ctx['parent_key'], ctx['prep'])
+        valid = []
+        for f in subs:
+            if calc_rdb(f) < -0.5:
+                continue
+            ion = apply_electron_mode(calc_exact(f), electron_mode)
+            if mass_mode == "ppm":
+                if mz <= 0:
+                    continue
+                if abs((ion - mz) / mz * 1.0e6) > mass_tol:
+                    continue
+            else:                                    # "mda"
+                if abs(ion - mz) * 1000.0 > mass_tol:
+                    continue
+            valid.append(f)
+
     if not valid:
-        return None, None, 0
+        return None, None, 0, None
+
     best = pick_best_v3(
         valid, parent, t_nom, ctx['struct_wl'],
         intensity_map, ctx['ring_count'], filter_flags, ctx['rdkit_frags'])
     if best is None:
-        return None, None, len(valid)
+        return None, None, len(valid), None
+
     exact = apply_electron_mode(calc_exact(best), electron_mode)
-    return best, exact, len(valid)
+    err   = None
+    if mz is not None and mz > 0:
+        err = (exact - mz) / mz * 1.0e6
+    return best, exact, len(valid), err
 
 # ==================================================================
 # SECTION 11: XML / binary I/O helpers
@@ -2405,7 +2503,8 @@ def sanitize_xml(text):
 # ==================================================================
 
 def convert_library(xml_path, out_path, min_peaks, electron_mode,
-                    log_fn, filter_flags, export_flags=None):
+                    log_fn, filter_flags, export_flags=None,
+                    mass_mode="unit", mass_tol=0.0):
     """Convert a unit-mass MassHunter library to exact mass.
 
     For each compound:
@@ -2549,9 +2648,11 @@ def convert_library(xml_path, out_path, min_peaks, electron_mode,
             ab    = ab_vals[pi]
             t_nom = int(round(mz))
             # Single shared pipeline -- see assign_peak() (Option 6).
-            best, exact, n_valid = assign_peak(
+            # mz is passed whole: in accurate mode its decimals are
+            # what select the formula.
+            best, exact, n_valid, m_err = assign_peak(
                 parent, t_nom, ctx, intensity_map,
-                filter_flags, electron_mode)
+                filter_flags, electron_mode, mz, mass_mode, mass_tol)
             if best is None:
                 continue
             if n_valid > 1:
@@ -3488,35 +3589,6 @@ def show_rdkit_setup(owner_form, on_state_change=None):
 # SECTION 14: GUI
 # =============================================================================
 
-def park_number_boxes(container):
-    """Scroll every NumericUpDown under `container` back to its first character.
-
-    v1.2 FIX: a NumericUpDown paints its value in a child text box that can be
-    left scrolled sideways, and then the leading digits are simply not on
-    screen. Observed in the sibling tool UA_ConvertNonHitsToHits running
-    inside Unknowns Analysis: a box holding 3.0 showed nothing but the
-    right-hand sliver of the 0, pinned to the left of an otherwise empty
-    field, while Value was still correct. The construction pattern here is
-    the same, so the same guard is applied.
-
-    Widening the control does NOT clear it -- only moving the caret back does
-    (both verified on MassHunter's own IronPython 2.7.5 engine). Wired to
-    each form's Shown event, because the layout pass that can leave a box
-    scrolled runs as the window is shown.
-    """
-    try:
-        for c in container.Controls:
-            if isinstance(c, NumericUpDown):
-                try:
-                    c.Select(0, 0)
-                except Exception:
-                    pass
-            elif c.Controls.Count > 0:
-                park_number_boxes(c)
-    except Exception:
-        pass
-
-
 def _Run():
     """Build and show the GUI. Everything else now lives at module level
     (Option 4), so this function captures only the widgets it creates.
@@ -3536,9 +3608,6 @@ def _Run():
         #   Row 6  y=243  Log text box (fills remaining space)
 
         form = Form()
-        # v1.2: see park_number_boxes() -- the layout pass that runs as the
-        # window is shown can leave a number box scrolled sideways.
-        form.Shown += lambda s, e: park_number_boxes(form)
         form.Text      = APP_TITLE + "  v" + APP_VERSION
         form.Size      = Size(960, 810)   # +56 for the brand banner
         form.BackColor = C_BG
@@ -3617,6 +3686,57 @@ def _Run():
         nud_min = NumericUpDown()
         nud_min.Location = Point(430, y)
         nud_min.Size     = Size(60, 24)
+
+        # ---- Accurate-mass controls (v3.3) ----
+        # Row 3 has free width from x=520, so the rows below keep
+        # their existing y positions.
+        lbl_mass = Label(Text="Mass mode:", Location=Point(520, y + 4),
+                         AutoSize=True, Font=ui_font)
+        cmb_mass = ComboBox()
+        cmb_mass.Location      = Point(600, y)
+        cmb_mass.Size          = Size(170, 24)
+        cmb_mass.Font          = ui_font
+        cmb_mass.DropDownStyle = ComboBoxStyle.DropDownList
+        cmb_mass.Items.Add("Unit mass (nominal)")   # -> "unit"
+        cmb_mass.Items.Add("Accurate mass (ppm)")   # -> "ppm"
+        cmb_mass.Items.Add("Accurate mass (mDa)")   # -> "mda"
+        _saved_mm = cfg.get('mass_mode', DEFAULT_MASS_MODE)
+        if _saved_mm == 'ppm':
+            cmb_mass.SelectedIndex = 1
+        elif _saved_mm == 'mda':
+            cmb_mass.SelectedIndex = 2
+        else:
+            cmb_mass.SelectedIndex = 0
+
+        lbl_tol = Label(Text="Tol:", Location=Point(782, y + 4),
+                        AutoSize=True, Font=ui_font)
+        nud_tol = NumericUpDown()
+        nud_tol.Location      = Point(815, y)
+        nud_tol.Size          = Size(80, 24)
+        nud_tol.Font          = ui_font
+        nud_tol.DecimalPlaces = 2
+        nud_tol.Minimum       = 0
+        nud_tol.Maximum       = 10000
+        nud_tol.Increment     = 1
+        try:
+            nud_tol.Value = float(cfg.get('mass_tol',
+                                          str(DEFAULT_TOL_PPM)))
+        except:
+            nud_tol.Value = DEFAULT_TOL_PPM
+
+        def _mass_mode_str():
+            i = cmb_mass.SelectedIndex
+            return "ppm" if i == 1 else ("mda" if i == 2 else "unit")
+
+        def _on_mass_mode(s, e):
+            """Grey the tolerance out in unit mode, where it has no
+            effect, and relabel it with the active unit."""
+            m = _mass_mode_str()
+            nud_tol.Enabled = (m != "unit")
+            lbl_tol.Text    = "Tol:" if m == "unit" else (
+                "ppm:" if m == "ppm" else "mDa:")
+        cmb_mass.SelectedIndexChanged += _on_mass_mode
+        _on_mass_mode(None, None)
         nud_min.Font     = ui_font
         nud_min.Minimum  = 1
         nud_min.Maximum  = 100
@@ -3718,6 +3838,7 @@ def _Run():
         for ctrl in [lbl_in, txt_in, btn_in,
                      lbl_out, txt_out, btn_out,
                      lbl_emode, cmb_emode, lbl_min, nud_min, lbl_struct,
+                     lbl_mass, cmb_mass, lbl_tol, nud_tol,
                      grp_flt,
                      lbl_export, chk_xml, chk_msp, chk_sdf,
                      btn_preview, btn_convert, btn_quit,
@@ -3761,6 +3882,18 @@ def _Run():
                 return "none"
             return "remove"
 
+        def get_mass_settings():
+            """Return (mass_mode, tolerance). Tolerance is 0 in unit
+            mode so assign_peak() takes the nominal path."""
+            m = _mass_mode_str()
+            if m == "unit":
+                return "unit", 0.0
+            try:
+                return m, float(str(nud_tol.Value))
+            except:
+                return m, (DEFAULT_TOL_PPM if m == "ppm"
+                           else DEFAULT_TOL_MDA)
+
         def get_filter_flags():
             """Return filter flags dict reflecting current checkbox states."""
             return {
@@ -3781,8 +3914,16 @@ def _Run():
             }
 
         def save_current_config():
-            """Persist all current GUI settings."""
-            save_config({
+            """Persist all current GUI settings.
+
+            Merged into what is already stored, so keys this dialog
+            does not own -- rdkit_path, written by the RDKit setup
+            dialog -- survive. Replacing the dict wholesale used to
+            wipe them.
+            """
+            _merged  = load_config()
+            _mm, _mt = get_mass_settings()
+            _merged.update({
                 'last_dir':      last_dir[0],
                 'electron_mode': get_electron_mode(),
                 'min_peaks':     str(int(nud_min.Value)),
@@ -3795,7 +3936,10 @@ def _Run():
                 'export_xml':    "1" if chk_xml.Checked else "0",
                 'export_msp':    "1" if chk_msp.Checked else "0",
                 'export_sdf':    "1" if chk_sdf.Checked else "0",
+                'mass_mode':     _mm,
+                'mass_tol':      str(_mt),
             })
+            save_config(_merged)
 
         # ---- File browser event handlers ----
 
@@ -3867,9 +4011,10 @@ def _Run():
             emode    = get_electron_mode()
             min_pk   = int(nud_min.Value)
             flt_flgs = get_filter_flags()
+            mass_mode, mass_tol = get_mass_settings()
 
-            log("=== Preview v3.0  (mode={0}, min_peaks={1}) ===".format(
-                emode, min_pk))
+            log("=== Preview  (electron={0}, min_peaks={1}, mass={2}, tol={3}) ===".format(
+                emode, min_pk, mass_mode, mass_tol))
             active = [k for k, v in flt_flgs.items() if v]
             log("    Filters active: {0}".format(
                 ", ".join(active) if active else "none"))
@@ -3958,8 +4103,9 @@ def _Run():
                             dropped += 1
                             continue
 
-                        best, exact, n_valid = assign_peak(
-                            parent, t_nom, pctx, imap, flt_flgs, emode)
+                        best, exact, n_valid, m_err = assign_peak(
+                            parent, t_nom, pctx, imap, flt_flgs, emode,
+                            mz, mass_mode, mass_tol)
                         if best is None:
                             dropped += 1
                             continue
@@ -3987,13 +4133,16 @@ def _Run():
                         stable_tag = (
                             " [{0}]".format(stable_hit[0])
                             if stable_hit else "")
+                        err_tag = ("" if m_err is None
+                                   or mass_mode == "unit"
+                                   else "  {0:+.2f} ppm".format(m_err))
 
                         assigned += 1
                         log("  {0:>4} {1:>5.1f}%  {2:>12.6f}  {3:<12} "
                             "{4}  -{5}{6}{7}{8}".format(
                             t_nom, rel_pct, exact,
                             formula_str(best), ee_str, loss_s,
-                            opt_tag, struct_tag, stable_tag))
+                            opt_tag, struct_tag, stable_tag) + err_tag)
 
                     status = "OK" if assigned >= min_pk else "SKIP"
                     log("  [{0}] {1}/{2} assigned,  {3} dropped,  "
@@ -4030,13 +4179,15 @@ def _Run():
             emode    = get_electron_mode()
             min_pk   = int(nud_min.Value)
             flt_flgs = get_filter_flags()
+            mass_mode, mass_tol = get_mass_settings()
             save_current_config()
 
             try:
                 exp_flgs = get_export_flags()
+                mass_mode, mass_tol = get_mass_settings()
                 n = convert_library(
                     in_path, out_path, min_pk, emode, log, flt_flgs,
-                    exp_flgs)
+                    exp_flgs, mass_mode, mass_tol)
                 if n > 0:
                     # Build a list of output files for the completion dialog.
                     _base = out_path

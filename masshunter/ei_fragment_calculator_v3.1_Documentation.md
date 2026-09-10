@@ -1,18 +1,84 @@
-# EI Fragment Calculator — v3.2
+# EI Fragment Calculator — v3.3
 
 | | |
 |---|---|
 | **Platform** | MassHunter Library Editor — IronPython 2.7.5, .NET-only, with a WinForms UI |
-| **File** | `ei_fragment_calculator_v3.1.py` (`APP_VERSION = "3.2"`) |
+| **File** | `ei_fragment_calculator_v3.1.py` (`APP_VERSION = "3.3"`) |
 | **Repo path** | `masshunter/ei_fragment_calculator_v3.1.py` |
 | **Install folder** | `<MassHunter>\Scripts\LibraryEdit\` |
 | **Settings file** | `%AppData%\exactmass_libconv\settings.txt` |
-| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` → `v3.1.1` → `v3.1.2` → `v3.2` |
+| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` → `v3.1.1` → `v3.1.2` → `v3.2` → `v3.3` |
 
 > **The filename does not carry the patch level.** The file stays
 > `ei_fragment_calculator_v3.1.py`; the build is identified by `APP_VERSION`
 > in the source and by the version shown in the banner. **Check the banner
-> reads v3.2** — anything lower is an older copy.
+> reads v3.3** — anything lower is an older copy.
+
+### Fixed in 3.3 — number boxes could hide their value
+
+**Min peaks** is a WinForms `NumericUpDown`, which paints its value in a
+child text box that can be left scrolled sideways — and then the value is
+simply not on screen. This was reported in the sibling tool
+UA_ConvertNonHitsToHits, where a box holding `3.0` showed nothing but the
+right-hand sliver of the `0` in an apparently empty field. Widening the
+control does not clear it; only moving the caret back does (both verified on
+MassHunter's own IronPython 2.7.5). `park_number_boxes()` now runs on the
+form's `Shown` event. No behaviour or chemistry change.
+
+### New in 3.3 — accurate-mass spectra
+
+Until 3.2 every peak was rounded to a nominal mass and the decimals thrown
+away, so an accurate-mass library gained nothing from its own precision. A
+**Mass mode** control on row 3 now selects how peaks are matched:
+
+| Mass mode | Behaviour |
+|---|---|
+| **Unit mass (nominal)** — default | Enumerate sub-formulas whose *nominal* mass equals `round(m/z)`. Byte-identical to v3.0/v3.2 |
+| **Accurate mass (ppm)** | Keep only candidates whose electron-corrected *exact* mass is within *N* ppm of the measured m/z. Default 10 ppm |
+| **Accurate mass (mDa)** | Same, with an absolute tolerance in mDa. Default 5 mDa |
+
+The tolerance box is greyed out in unit mode and relabels itself `ppm:` or
+`mDa:`. Both settings persist, and the preview reports the mass error of every
+assignment in ppm, e.g. `  -1.83 ppm`.
+
+Candidates outside tolerance are **rejected**, not penalised — so the
+tolerance is the control that matters. Within tolerance the existing chemistry
+score decides. If assignments stay ambiguous, tighten the tolerance before
+reaching for more filters.
+
+#### What it buys you — measured
+
+Simulated measurements at the true exact mass, counting candidates that
+survive selection:
+
+| Parent | Fragment | m/z | Unit mode | 10 ppm | 5 mDa |
+|---|---|---|---|---|---|
+| `C8H10N4O2` (caffeine) | `C7H7N4O2` | 179.0564 | 2 | **1** | 1 |
+| `C21H20Cl2O3` (permethrin) | `C13H9Cl2` | 235.0076 | **21** | **1** | 1 |
+| `C9H11Cl3NO3PS` (chlorpyrifos) | M+ | 348.9257 | 1 | 1 | 1 |
+| `C27H46O` (cholesterol) | `C19H27` | 255.2107 | 7 | **1** | 1 |
+| `C6H18OSi2` (TMS ether) | `C5H15OSi2` | 147.0656 | 2 | **1** | 1 |
+| `C10H8FeNa2O4` | `C10H8O4` | 192.0417 | **16** | **1** | 1 |
+
+The true formula was retained in every accurate-mode result. Permethrin's
+fragment goes from 21 plausible formulas to one; the metal complex from 16 to
+one. That is the ambiguity the `[Nopt]` tag reports in unit mode.
+
+#### Why the search window is ±1 nominal mass
+
+Accurate mode cannot enumerate at `round(m/z)` alone. A formula's *nominal*
+mass and `round(its exact mass)` diverge once the mass defect passes 0.5 Da,
+and that happens inside the normal GC-MS range — hydrogen adds +7.8 mDa each:
+
+```
+C50H100   nominal 700   exact 700.783   round(exact) = 701   offset +1
+C40H82    nominal 562   exact 562.642   round(exact) = 563   offset +1
+```
+
+Verified: the `C50H100` molecular ion **is** found with the ±1 window and is
+**not** found when enumerating at `round(m/z)` only. Bromine (−81.7 mDa each)
+rounds the other way, so the window is symmetric. Raise
+`ACCURATE_NOMINAL_WINDOW` for very high mass.
 
 ### Fixed in 3.1.2 — the Browse buttons were off-screen
 
@@ -203,6 +269,8 @@ Remove-Item "$env:AppData\exactmass_libconv\settings.txt"
 |---|---|---|
 | **Electron mode** | **`remove (EI+, standard)`** / `add (EI-, negative ion)` / `none (no correction)` | The detector measures the ion, i.e. neutral − one electron, so `remove` is the standard EI+ choice |
 | **Min peaks** | `3` (range 1–100) | Spectra with fewer assigned peaks are skipped |
+| **Mass mode** | **`Unit mass (nominal)`** / `Accurate mass (ppm)` / `Accurate mass (mDa)` | How peaks are matched — see §*New in 3.3* |
+| **Tol** | `10` ppm / `5` mDa | Tolerance; ignored in unit mode |
 
 ### Post-enumeration filters
 
