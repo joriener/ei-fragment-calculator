@@ -3340,148 +3340,688 @@ DESCRIPTION = (
     "fragmentation rules and a stable-ion library, and writes the winning "
     "exact mass back out as MassHunter XML, NIST MSP and/or MDL SDF.")
 
-README_HTML = r'''<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>EI Fragment Calculator v3.1</title>
+README_HTML = r'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1200">
+<title>EI Fragment Calculator &mdash; Readme</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100;0,200;0,300;0,400;0,500;0,700;0,900;1,400&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
- body{font-family:"Segoe UI",sans-serif;background:#EAEAEA;color:#53565A;
-      margin:0;padding:0}
- .banner{background:#0085D5;color:#fff;padding:16px 24px;font-size:20px}
- .banner span{font-size:13px;opacity:.85;margin-left:10px}
- .wrap{max-width:900px;margin:0 auto;padding:24px}
- .card{background:#fff;border:1px solid #C8C8C6;padding:18px 22px;
-       margin-bottom:18px}
- .warn{background:#FFF6E5;border:1px solid #E8C88A;padding:12px 16px;
-       margin-bottom:18px;color:#6B5628}
- h2{color:#303030;font-size:16px;margin:22px 0 8px}
- h3{color:#303030;font-size:13px;margin:16px 0 6px}
- table{border-collapse:collapse;width:100%;margin:8px 0 14px}
- th{background:#D4DDE5;color:#303030;text-align:left;padding:6px 9px;
-    font-size:12px}
- td{border-bottom:1px solid #E4E4E2;padding:6px 9px;font-size:12px;
-    vertical-align:top}
- code{font-family:Consolas,monospace;background:#F3F7FB;padding:1px 4px}
- .foot{color:#888B8D;font-size:11px;text-align:center;padding:10px 0 26px}
-</style></head><body>
-<div class="banner">EI Fragment Calculator<span>v3.1</span></div>
-<div class="wrap">
 
-<div class="warn"><b>Disclaimer.</b> Created by Agilent but not officially
-tested/supported, this is a user contributed tool that is as-is with no
-warranty.</div>
+/* ── CSS CUSTOM PROPERTIES (colour tokens) ───────────────────────────────── */
+:root {
+  --ag-blue:       #3D4B5A;   /* Quant ribbon slate — header, command surfaces          */
+  --ag-blue-dark:  #273645;   /* pressed ribbon state                                    */
+  --ag-blue-mid:   #5E7182;   /* selected tab and table divider                          */
+  --ag-blue-light: #E9F2F8;   /* selected row and hover background                      */
+  --ag-navy:       #273645;   /* dark Quant ribbon surface                               */
+  --ag-heading:    #303030;   /* headings, log header bg                                 */
+  --ag-text:       #53565A;   /* body text                                               */
+  --ag-muted:      #888B8D;   /* secondary text, TOC headings, hint labels               */
+  --ag-border:     #D8D8D6;   /* card borders, table cell borders                        */
+  --ag-bg:         #FFFFFF;   /* content area background                                 */
+  --ag-bg-alt:     #F5F5F5;   /* page/sidebar background                                 */
+  --ag-green:      #2E7D32;   /* success badges, OK state                                */
+  --ag-orange:     #E87722;   /* warning badges                                          */
+  --ag-red:        #C62828;   /* error badges                                            */
+}
 
-<div class="card">
-<h2>What it does</h2>
-<p>Converts a unit-mass EI spectral library into an exact-mass library. For
-each compound the tool parses the molecular formula and the MOL block, builds
-a structural fragment whitelist, and then for every peak enumerates all
-sub-formulas of the parent with matching nominal mass, filters them, scores
-them, and assigns the best candidate.</p>
-<p>The molecular formula is an <b>elemental upper bound</b>: a fragment can
-never contain an atom the parent does not have. That is what makes the
-enumeration tractable and the assignment meaningful.</p>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+  font-size: 13px; line-height: 1.5;
+  color: var(--ag-text); background: var(--ag-bg-alt);
+}
+
+/* ── STYLE LABEL BAR ─────────────────────────────────────────────────────── */
+/* Narrow dark strip at the very top of the page.
+   Left: category label (e.g. "Tool Reference · Layout A")
+   Right: context label (e.g. "MassHunter GC/MS Acq · Internal Use")
+   Change or blank out either label as needed. */
+.style-label-bar {
+  background: #E7ECF0; height: 28px;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 72px;
+}
+.label-left  { font-size:10px; font-weight:600; color:var(--ag-heading); text-transform:none; letter-spacing:0; }
+.label-right { font-size:10px; color:var(--ag-muted); }
+
+/* ── HEADER — LAYOUT A (Quant slate + logo) ──────────────────────────────── */
+/* Use this layout for standard tool documentation. The <img> in
+  .doc-header-inner shows the Agilent logo. */
+.doc-header {
+  position: relative; background: var(--ag-blue);
+  padding: 16px 48px 12px; overflow: hidden;
+}
+.doc-header::before { content: none; }
+.doc-header-inner {
+  position: relative; display: flex; align-items: center;
+  gap: 20px; margin-bottom: 16px;
+}
+.doc-header img   { height:32px; width:auto; display:block; flex-shrink:0; }
+.hdr-divider      { width:1px; height:36px; background:rgba(255,255,255,.3); flex-shrink:0; }
+.hdr-title        { font-size:18px; font-weight:400; color:#fff; letter-spacing:0; }
+.hdr-sub          { font-size:12px; font-weight:400; color:rgba(255,255,255,.78); margin-top:2px; }
+/* Badge: top-right pill — e.g. "Internal Diagnostic Tool" */
+.hdr-badge {
+  margin-left:auto; background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.25);
+  color:rgba(255,255,255,.9); font-size:10px; font-weight:600;
+  letter-spacing:0; text-transform:none; padding:4px 9px;
+  border-radius:0; white-space:nowrap;
+}
+/* Meta pills: bottom row of header — instrument, platform, version info */
+.hdr-meta {
+  position:relative; display:flex; gap:8px; flex-wrap:wrap;
+  padding-top:14px; border-top:1px solid rgba(255,255,255,.2);
+}
+.meta-pill {
+  font-size:11px; color:rgba(255,255,255,.85); background:transparent;
+  padding:2px 10px 2px 0; border-radius:0; border:0;
+}
+.meta-pill strong { font-weight:600; color:#fff; }
+
+/* ── HEADER — LAYOUT B (deep navy + text wordmark) ───────────────────────── */
+/* Use this alternative when you want a darker, launcher-style header
+   without the Agilent logo. Replace .doc-header bg + add .hdr-wordmark.
+   To use Layout B, change the header bg to var(--ag-navy) and replace
+   the <img> element with:
+     <div class="hdr-wordmark">MY<span>TOOL</span></div>
+*/
+.hdr-wordmark       { font-size:28px; font-weight:700; color:#fff; letter-spacing:.04em; }
+.hdr-wordmark span  { color:var(--ag-blue); font-weight:300; }
+
+/* ── TWO-COLUMN LAYOUT ───────────────────────────────────────────────────── */
+/* 220 px sticky TOC sidebar + fluid content area */
+.doc-body {
+  display: grid; grid-template-columns: 220px 1fr;
+  align-items: start; max-width: 1300px; margin: 0 auto;
+}
+
+/* ── TABLE OF CONTENTS SIDEBAR ───────────────────────────────────────────── */
+.doc-toc-col {
+  align-self: stretch; background: var(--ag-bg-alt);
+  border-right: 1px solid var(--ag-border);
+}
+.doc-toc { position: sticky; top: 0; padding: 28px 18px; }
+.toc-heading {
+  font-size:10px; font-weight:700; color:var(--ag-muted);
+  text-transform:uppercase; letter-spacing:.12em; margin-bottom:12px;
+}
+.toc-list { list-style:none; }
+.toc-list > li { margin-bottom:1px; }
+.toc-list > li > a {
+  display:block; font-size:13px; color:var(--ag-text);
+  text-decoration:none; padding:5px 10px; border-radius:4px;
+}
+.toc-list > li > a:hover { background:var(--ag-blue-light); color:var(--ag-blue); }
+/* Active section highlight — set by JavaScript IntersectionObserver */
+.toc-list li.toc-active > a {
+  color:var(--ag-blue); font-weight:500; background:var(--ag-blue-light);
+}
+/* Second-level TOC items (sub-sections) */
+.toc-sub { list-style:none; padding-left:14px; margin:2px 0 4px; }
+.toc-sub li a {
+  display:block; font-size:12px; color:var(--ag-muted);
+  text-decoration:none; padding:3px 8px; border-radius:3px;
+}
+.toc-sub li a:hover { color:var(--ag-blue); background:var(--ag-blue-light); }
+/* Horizontal rule between TOC sections */
+.toc-divider { height:1px; background:var(--ag-border); margin:10px 0; }
+
+/* ── CONTENT AREA ────────────────────────────────────────────────────────── */
+.doc-content { background:var(--ag-bg); padding:28px 40px 48px; min-width:0; }
+
+/* Section heading: thin blue left border, light-weight font */
+h2 {
+  font-size:16px; font-weight:600; color:var(--ag-heading);
+  border-left:3px solid var(--ag-blue-mid); padding-left:10px;
+  margin:30px 0 12px; scroll-margin-top:16px;
+}
+h2:first-of-type { margin-top:0; }
+h3 { font-size:13px; font-weight:600; color:var(--ag-heading); margin:18px 0 7px; }
+h4 { font-size:13px; font-weight:600; color:var(--ag-heading); margin-bottom:6px; }
+p  { margin-bottom:10px; }
+ul, ol { margin:6px 0 12px 20px; }
+li { margin-bottom:4px; }
+
+/* Inline code */
+code {
+  font-family:Consolas, monospace; font-size:12px;
+  background:var(--ag-bg-alt); color:var(--ag-blue-dark); padding:1px 4px; border-radius:0;
+}
+/* Code block — dark terminal style */
+pre {
+  font-family:"Roboto Mono", Consolas, monospace; font-size:12px;
+  background:#1B2A3B; color:#B8CAD8;
+  padding:16px 20px; border-radius:4px; margin:12px 0 18px;
+  overflow-x:auto; line-height:1.7;
+}
+/* Syntax colour spans inside <pre> */
+pre .cm  { color:#7BBCD8; }  /* comment  */
+pre .key { color:#50FA7B; }  /* key      */
+pre .val { color:#FFB86C; }  /* value    */
+pre .str { color:#F1FA8C; }  /* string   */
+
+/* ── TABLE ───────────────────────────────────────────────────────────────── */
+table { width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }
+th {
+  background:#D4DDE5; color:var(--ag-heading); font-weight:600; text-align:left;
+  padding:8px 12px; font-size:12px; letter-spacing:.02em;
+  border:1px solid var(--ag-border);
+}
+td {
+  padding:7px 12px; border:1px solid var(--ag-border);
+  vertical-align:top; background:var(--ag-bg);
+}
+tr:nth-child(even) td { background:#F8FAFB; }
+
+/* ── CALLOUT BOXES ───────────────────────────────────────────────────────── */
+/* .tip   — blue left border, light blue bg.  Helpful notes, examples.    */
+.tip {
+  background:var(--ag-blue-light); border-left:4px solid var(--ag-blue);
+  padding:10px 14px; border-radius:0; margin:12px 0; font-size:13px;
+}
+.tip strong { color:var(--ag-blue-dark); }
+
+/* .warn  — amber left border, cream bg.  Warnings, gotchas.              */
+.warn {
+  background:#FFF8E1; border-left:4px solid #F9A825;
+  padding:10px 14px; border-radius:0; margin:12px 0; font-size:13px;
+}
+.warn strong { color:#7B5800; }
+
+/* .note  — purple left border, lavender bg.  Conceptual notes, caveats.  */
+.note {
+  background:#F3F0F8; border-left:4px solid #6B3FA0;
+  padding:10px 14px; border-radius:0; margin:12px 0; font-size:13px;
+}
+
+/* .callout-note — steel left border, pale blue bg.  Neutral reference.   */
+.callout-note {
+  background:#F0F7FF; border-left:4px solid var(--ag-blue-mid);
+  padding:10px 14px; border-radius:0; margin:12px 0; font-size:13px;
+}
+
+/* .callout-warn — orange left border, light orange bg.  Stronger warning. */
+.callout-warn {
+  background:#FFF3E0; border-left:4px solid var(--ag-orange);
+  padding:11px 16px; border-radius:0 4px 4px 0; margin:14px 0; font-size:13px;
+}
+.callout-warn strong { color:#7B4800; }
+
+/* ── NUMBERED STEPS ──────────────────────────────────────────────────────── */
+/* Use .step > .step-num + .step-body for procedural instructions.
+   step-num: blue circle with number. step-body: prose content. */
+.step { display:flex; gap:14px; margin-bottom:12px; align-items:flex-start; }
+.step-num {
+  min-width:24px; height:24px; background:var(--ag-blue); color:#fff;
+  border-radius:0; display:flex; align-items:center; justify-content:center;
+  font-size:12px; font-weight:700; flex-shrink:0; margin-top:1px;
+}
+.step-body { flex:1; padding-top:3px; }
+
+/* ── FEATURE CARDS ───────────────────────────────────────────────────────── */
+/* 2-column grid of cards. Each card has a coloured top border, a tag chip,
+   an h3 title, and a paragraph. Use at the top of the Overview section. */
+.feature-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:14px 0 20px; }
+.feature-card {
+  background:var(--ag-bg); border:1px solid var(--ag-border);
+  border-top:2px solid var(--ag-blue-mid); border-radius:0; padding:12px 14px;
+}
+.feature-card .tag {
+  display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.04em; padding:1px 6px; border-radius:0; margin-bottom:8px;
+  background:var(--ag-blue-light); color:var(--ag-blue-mid);
+}
+
+/* ── INLINE COLOUR SWATCHES ──────────────────────────────────────────────── */
+/* Use .diff-swatch with an inline style="background:#RRGGBB" to show a
+   colour chip in legend tables (e.g. diff colour keys). */
+.diff-swatch {
+  display:inline-block; width:14px; height:14px;
+  border-radius:2px; vertical-align:middle; margin-right:5px;
+  border:1px solid var(--ag-border);
+}
+
+/* ── INLINE BADGES ───────────────────────────────────────────────────────── */
+/* Small coloured pill badges for status or category labelling in tables. */
+.badge {
+  display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.04em; padding:2px 6px; border-radius:0; vertical-align:middle;
+}
+.badge-green  { background:#E8F5E9; color:var(--ag-green);  }
+.badge-orange { background:#FFF3E0; color:var(--ag-orange); }
+.badge-red    { background:#FFEBEE; color:var(--ag-red);    }
+
+/* ── PAGE FOOTER ─────────────────────────────────────────────────────────── */
+/* Dark footer with Agilent logo on the left and a label on the right. */
+.page-footer {
+  background:#303030; padding:18px 72px;
+  display:flex; align-items:center; justify-content:space-between;
+}
+.page-footer img  { height:26px; width:auto; opacity:.85; }
+.footer-right     { font-size:11px; color:rgba(255,255,255,.4); font-weight:300; }
+
+/* ── PRINT ───────────────────────────────────────────────────────────────── */
+@media print {
+  body { width:100%; }
+  .style-label-bar, .doc-toc-col, .page-footer { display:none !important; }
+  .doc-body { display:block !important; }
+  .doc-content { padding:24px 0 !important; }
+}
+
+/* ── COLOUR PALETTE SWATCHES ─────────────────────────────────────────────── */
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 14px 0 18px;
+}
+.swatch-cell {
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--ag-border);
+  font-size: 11px;
+  font-family: "Roboto Mono", Consolas, monospace;
+}
+.swatch-color {
+  height: 44px;
+}
+.swatch-label {
+  background: var(--ag-bg);
+  padding: 5px 8px;
+  color: var(--ag-heading);
+  font-weight: 500;
+  line-height: 1.4;
+}
+.swatch-label span {
+  display: block;
+  color: var(--ag-muted);
+  font-weight: 400;
+}
+
+</style>
+</head>
+<body>
+
+<div class="doc-header">
+  <div class="doc-header-inner">
+    <img src="data:image/png;base64,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" alt="Agilent">
+    <div class="hdr-divider"></div>
+    <div>
+      <div class="hdr-title">EI Fragment Calculator</div>
+      <div class="hdr-sub">Assigns exact masses to unit-mass EI spectra and writes them back into a MassHunter library</div>
+    </div>
+    <div class="hdr-badge">Internal Diagnostic Tool</div>
+  </div>
+  <div class="hdr-meta">
+    <span class="meta-pill"><strong>Host:</strong> MassHunter Library Editor</span>
+    <span class="meta-pill"><strong>Runtime:</strong> IronPython 2.7.5 &middot; .NET only</span>
+    <span class="meta-pill"><strong>Platform:</strong> Windows 10 / 11</span>
+    <span class="meta-pill"><strong>Version:</strong> 3.4</span>
+  </div>
 </div>
 
-<div class="card">
-<h2>Workflow</h2>
-<table>
-<tr><th>Step</th><th>What to do</th></tr>
-<tr><td>1</td><td>Pick the <b>Input XML</b> -- a MassHunter library
-(<code>.mslibrary.xml</code>) whose spectra carry unit-mass peaks.</td></tr>
-<tr><td>2</td><td>Pick an <b>Output Path</b>. The XML is written as
-<code>&lt;base&gt;_exactmass.mslibrary.xml</code>; MSP and SDF, if ticked, sit
-alongside it.</td></tr>
-<tr><td>3</td><td>Choose the <b>Electron mode</b>: <code>remove</code> for
-EI+ (the detector measures the ion, i.e. neutral minus one electron),
-<code>add</code> for EI-, <code>none</code> for no correction.</td></tr>
-<tr><td>4</td><td>Set <b>Min peaks</b> -- spectra with fewer assigned peaks
-than this are skipped.</td></tr>
-<tr><td>5</td><td>Tick the <b>filters</b> you want. All are on by default
-except RDKit.</td></tr>
-<tr><td>6</td><td>Press <b>Preview</b> first. It runs the identical
-assignment pipeline as Convert and writes nothing.</td></tr>
-<tr><td>7</td><td>Press <b>Convert</b> to write the output files.</td></tr>
-</table>
+<div class="doc-body">
+  <div class="doc-toc-col">
+    <nav class="doc-toc">
+      <div class="toc-heading">Contents</div>
+      <ul class="toc-list">
+        <li><a href="#what-it-does">What It Does</a></li>
+        <li><a href="#how-to-use">How to Use</a></li>
+        <div class="toc-divider"></div>
+        <li><a href="#mass-mode">Mass Mode</a>
+          <ul class="toc-sub">
+            <li><a href="#unit-mass">Unit mass</a></li>
+            <li><a href="#accurate-mass">Accurate mass</a></li>
+          </ul>
+        </li>
+        <li><a href="#filters">Filters</a></li>
+        <li><a href="#fragmentation">Fragmentation Rules</a></li>
+        <div class="toc-divider"></div>
+        <li><a href="#reading-preview">Reading the Preview</a></li>
+        <li><a href="#output">Output</a></li>
+        <li><a href="#rdkit">RDKit Setup</a></li>
+        <div class="toc-divider"></div>
+        <li><a href="#limitations">Notes &amp; Limitations</a></li>
+      </ul>
+    </nav>
+  </div>
+
+  <div class="doc-content">
+    <h2 id="what-it-does">What It Does</h2>
+
+    <p>Converts a unit-mass EI spectral library into an exact-mass library.
+    For each compound the tool parses the molecular formula and the MOL block,
+    builds a structural fragment whitelist, and then <strong>for every
+    peak</strong> enumerates every sub-formula of the parent with a matching
+    mass, filters out the chemically impossible ones, scores the survivors and
+    assigns the best candidate's calculated exact mass.</p>
+
+    <div class="callout-note">The molecular formula acts as an
+    <strong>elemental upper bound</strong> &mdash; a fragment can never
+    contain an atom the parent does not have. That is what keeps the
+    enumeration tractable and the assignment meaningful.</div>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>Unit mass in, exact mass out</h3>
+        <p>The tool measures nothing. It assigns the most plausible formula to
+        each peak and reports that formula's calculated exact mass. It is not
+        a substitute for accurate-mass acquisition.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Ambiguity is real</h3>
+        <p>At higher m/z one nominal mass can host many valid sub-formulas.
+        The filters and the structural whitelist narrow this; where they
+        cannot, the winner is a ranked guess and the preview marks it
+        <code>[Nopt]</code>.</p>
+      </div>
+    </div>
+
+    <h2 id="how-to-use">How to Use</h2>
+
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body"><strong>Input XML</strong> &mdash; pick a
+      MassHunter library (<code>.mslibrary.xml</code>) whose spectra carry
+      unit-mass peaks.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body"><strong>Output Path</strong> &mdash; the XML is
+      written as <code>&lt;base&gt;_exactmass.mslibrary.xml</code>; MSP and
+      SDF, if ticked, sit alongside it.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body"><strong>Electron mode</strong> &mdash;
+      <code>remove</code> for EI+ (the detector measures the ion, i.e. neutral
+      minus one electron), <code>add</code> for EI&minus;, <code>none</code>
+      for no correction.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-body"><strong>Mass mode</strong> and
+      <strong>tolerance</strong> &mdash; see below. Leave it on
+      <em>Unit mass</em> unless your spectra really carry accurate
+      masses.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-body"><strong>Min peaks</strong> &mdash; spectra with
+      fewer assigned peaks than this are skipped.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">6</div>
+      <div class="step-body">Press <strong>Preview</strong> first. It runs the
+      identical assignment pipeline and writes nothing.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">7</div>
+      <div class="step-body">Press <strong>Convert</strong> to write the
+      ticked formats. The output is then re-read and its structure
+      verified.</div>
+    </div>
+
+    <div class="tip"><strong>Preview and Convert cannot disagree.</strong>
+    Both call one implementation of the pipeline, so what the preview shows is
+    what the conversion writes.</div>
+
+    <h2 id="mass-mode">Mass Mode</h2>
+
+    <h3 id="unit-mass">Unit mass</h3>
+    <p>Peaks are rounded to a nominal mass and sub-formulas of exactly that
+    nominal mass are enumerated. Everything after the decimal point is
+    discarded. This is the default and the historical behaviour.</p>
+
+    <h3 id="accurate-mass">Accurate mass</h3>
+    <p>Candidates are kept only when their electron-corrected exact mass falls
+    within the tolerance of the measured m/z, in <strong>ppm</strong> or
+    <strong>mDa</strong>. This is where accurate-mass data pays off: at 10 ppm
+    on a 150 Da ion the window is &plusmn;1.5 mDa, which usually leaves a
+    single formula.</p>
+
+    <table>
+      <tr><th>Parent</th><th>Fragment</th><th>m/z</th>
+          <th>Unit mode</th><th>10 ppm</th></tr>
+      <tr><td>C<sub>21</sub>H<sub>20</sub>Cl<sub>2</sub>O<sub>3</sub>
+          (permethrin)</td><td>C<sub>13</sub>H<sub>9</sub>Cl<sub>2</sub></td>
+          <td>235.0076</td><td><span class="badge badge-red">21</span></td>
+          <td><span class="badge badge-green">1</span></td></tr>
+      <tr><td>C<sub>10</sub>H<sub>8</sub>FeNa<sub>2</sub>O<sub>4</sub></td>
+          <td>C<sub>10</sub>H<sub>8</sub>O<sub>4</sub></td><td>192.0417</td>
+          <td><span class="badge badge-red">16</span></td>
+          <td><span class="badge badge-green">1</span></td></tr>
+      <tr><td>C<sub>27</sub>H<sub>46</sub>O (cholesterol)</td>
+          <td>C<sub>19</sub>H<sub>27</sub></td><td>255.2107</td>
+          <td><span class="badge badge-orange">7</span></td>
+          <td><span class="badge badge-green">1</span></td></tr>
+      <tr><td>C<sub>8</sub>H<sub>10</sub>N<sub>4</sub>O<sub>2</sub>
+          (caffeine)</td><td>C<sub>7</sub>H<sub>7</sub>N<sub>4</sub>O<sub>2</sub></td>
+          <td>179.0564</td><td><span class="badge badge-orange">2</span></td>
+          <td><span class="badge badge-green">1</span></td></tr>
+    </table>
+
+    <div class="note"><strong>Why the search window is &plusmn;1 nominal
+    mass.</strong> A formula's nominal mass and <code>round(its exact
+    mass)</code> diverge once the mass defect passes 0.5 Da, and that happens
+    inside the normal GC-MS range &mdash; hydrogen adds +7.8 mDa each, so
+    C<sub>50</sub>H<sub>100</sub> is nominal 700 but exact 700.783, which
+    rounds to 701. Bromine (&minus;81.7 mDa each) rounds the other way, so the
+    window is symmetric. Enumerating at <code>round(m/z)</code> alone would
+    miss those molecular ions outright.</div>
+
+    <div class="tip">Candidates outside the tolerance are
+    <strong>rejected</strong>, not penalised, so the tolerance is the control
+    that matters. If assignments stay ambiguous, tighten it before reaching
+    for more filters.</div>
+
+    <h2 id="filters">Filters</h2>
+
+    <p>Six independently toggleable filters. All on by default except
+    RDKit.</p>
+
+    <table>
+      <tr><th>Filter</th><th>Rejects</th><th>Basis</th></tr>
+      <tr><td>Nitrogen rule</td><td>Odd/even m/z inconsistent with the N+P
+          count for the ion type</td><td>McLafferty &amp; Turecek 1993</td></tr>
+      <tr><td>HD-check</td><td>DBE/C above 1.0 &mdash; implausibly
+          hydrogen-poor fragments</td><td>Pretsch et al. 2009</td></tr>
+      <tr><td>Lewis-Senior</td><td>Valence sums that cannot form a connected
+          structure</td><td>Senior 1951</td></tr>
+      <tr><td>Isotope M+1/M+2</td><td>Formulas whose predicted isotope pattern
+          disagrees with the observed spectrum</td><td>Gross 2017</td></tr>
+      <tr><td>SMILES ring-count</td><td>Fragments with more rings than the
+          parent can supply</td><td>Weininger 1988</td></tr>
+      <tr><td>RDKit bond-break</td><td>Heavy-atom formulas unreachable by any
+          single bond break</td><td>optional, see RDKit Setup</td></tr>
+    </table>
+
+    <div class="warn">The isotope filter is the most powerful of the six on
+    halogenated compounds because it uses the spectrum itself &mdash; but it
+    needs real intensity contrast. Against a flat or normalised peak list the
+    observed ratios are noise, so the filter detects that and stands
+    down rather than rejecting good formulas.</div>
+
+    <p>A seventh, separate option &mdash; <strong>Skip 13C
+    satellites</strong>, off by default &mdash; suppresses peaks that look
+    like the 13C satellite of an assigned peak below them, instead of giving
+    them a fragment formula of their own.</p>
+
+    <h2 id="fragmentation">Fragmentation Rules</h2>
+
+    <p>When the library entry carries a MOL block, four rules build a
+    whitelist of formulas a real EI fragmentation could produce. A candidate
+    matching the whitelist receives the largest single bonus in the scoring
+    model.</p>
+
+    <table>
+      <tr><th>Rule</th><th>Covers</th></tr>
+      <tr><td>Homolytic cleavage</td><td>Every non-ring single bond broken
+          &mdash; the general &sigma;-bond case</td></tr>
+      <tr><td>&alpha;-cleavage</td><td>C&ndash;C bonds &alpha; to
+          N/O/S/halogen; dominant for aldehydes, amines, ethers and
+          halides</td></tr>
+      <tr><td>McLafferty rearrangement</td><td>&gamma;-H migration to a
+          carbonyl via a six-membered transition state</td></tr>
+      <tr><td>Retro-Diels-Alder</td><td>Six-membered rings containing C=C
+          splitting into diene and dienophile</td></tr>
+    </table>
+
+    <h2 id="reading-preview">Reading the Preview</h2>
+
+    <p>One line per assigned peak: nominal m/z, relative intensity, the
+    assigned exact mass, the formula, EE or OE, and the neutral loss from the
+    molecular ion.</p>
+
+<pre><span class="cm">   m/z   rel%        exact mass   formula      ion  loss</span>
+   145  100.0%    145.028204   C7H5O3        EE  -CH3   <span class="cm">*  [tropylium]</span>
+   119   42.8%    119.048604   C7H7NO        EE  -CO2   <span class="cm">[3opt]</span>
+</pre>
+
+    <table>
+      <tr><th>Tag</th><th>Meaning</th></tr>
+      <tr><td><code>[Nopt]</code></td><td>N candidates were possible and one
+          was chosen</td></tr>
+      <tr><td><code>*</code></td><td>The formula matched the structural
+          whitelist</td></tr>
+      <tr><td><code>[ion]</code></td><td>A hit in the stable-ion library,
+          named</td></tr>
+      <tr><td><code>+1.83 ppm</code></td><td>Mass error of the assignment,
+          accurate mode only</td></tr>
+    </table>
+
+    <div class="tip">A high <code>[Nopt]</code> count on a compound is the
+    signal to supply a MOL block, enable more filters, or switch to accurate
+    mass with a tight tolerance.</div>
+
+    <h2 id="output">Output</h2>
+
+    <table>
+      <tr><th>Format</th><th>Notes</th></tr>
+      <tr><td>MassHunter XML</td><td>One <code>&lt;Compound&gt;</code> per
+          compound, with one <code>&lt;Spectrum&gt;</code> per source
+          spectrum</td></tr>
+      <tr><td>NIST / AMDIS MSP</td><td>One record per spectrum, suffixed
+          <code>[2/3]</code> when a compound contributed several</td></tr>
+      <tr><td>MDL SDF</td><td>One record per spectrum, same suffixing</td></tr>
+    </table>
+
+    <div class="tip">After the XML is written it is <strong>read back and
+    checked</strong> &mdash; compound, spectrum and peak counts against what
+    was intended, and that every base64 array pair decodes to equal, non-zero
+    lengths. Look for the <code>[VERIFY]</code> block at the end of the
+    log.</div>
+
+    <h2 id="rdkit">RDKit Setup</h2>
+
+    <p>The RDKit bond-break filter needs the SWIG-generated RDKit .NET
+    wrapper. Click <strong>RDKit&hellip;</strong> in the banner; the setup
+    dialog installs it for you, into a per-user folder that needs no
+    administrator rights, and enables the filter without restarting
+    MassHunter.</p>
+
+    <div class="warn"><strong>Why this needs a helper rather than copying one
+    file.</strong> The managed assembly is <code>RDKit2DotNet.dll</code>, not
+    the <code>RDKit2DotNetStandard.dll</code> earlier versions looked for
+    &mdash; that filename does not exist in the distributed package at all. It
+    P/Invokes into about 106 native boost and RDKit DLLs, so the managed DLL
+    alone can never work. And the natives must match the host process:
+    <code>LibraryEdit.exe</code> is a 32-bit image and needs the
+    <code>win-x86</code> set, so installing <code>win-x64</code> raises
+    <code>BadImageFormatException</code>.</div>
+
+    <p>After loading, the dialog <strong>calls RDKit for real</strong> &mdash;
+    it parses benzene and checks the atom count &mdash; because a successful
+    assembly load says nothing about whether the native libraries resolve. If
+    the self-test fails the filter is left disabled rather than failing on
+    first use.</p>
+
+    <h2 id="limitations">Notes &amp; Limitations</h2>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>Elements</h3>
+        <p>30 supported: Al As B Br C Ca Cl Co Cr Cu D F Fe H I K Mg Mn N Na
+        Ni O P Pb S Se Si Sn Ti V Zn. Deuterium is a distinct element.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Settings</h3>
+        <p>The last folder, min peaks, electron mode, mass mode and
+        tolerance, every filter flag and every export flag persist in
+        <code>%AppData%\exactmass_libconv\settings.txt</code>.</p>
+      </div>
+    </div>
+
+    <div class="warn"><strong>Not yet validated end to end.</strong> No
+    library has been converted inside a live Library Editor session. The
+    chemistry is verified by extracted-function testing &mdash; enumeration
+    output identical over 36,506 candidate formulas &mdash; and the output
+    verification and RDKit self-test exist to surface a problem at runtime
+    rather than hide it. Run <strong>Preview</strong> on a small library and
+    compare against a known-good result before trusting a conversion.</div>
+
+    <div class="note"><strong>Locale.</strong> The base64 codecs no longer
+    round-trip through a culture-dependent number parse, so output is
+    identical on any Windows regional setting. Libraries written by v3.0 or
+    earlier <em>on a non-English-locale machine</em> carry corrupted m/z and
+    abundance values and should be regenerated.</div>
+  </div>
 </div>
 
-<div class="card">
-<h2>The six filters</h2>
-<table>
-<tr><th>Filter</th><th>Rejects</th><th>Source</th></tr>
-<tr><td>Nitrogen rule</td><td>Odd/even m/z inconsistent with the N+P count
-for the ion type</td><td>McLafferty &amp; Turecek 1993</td></tr>
-<tr><td>HD-check</td><td>DBE/C above 1.0 -- implausibly hydrogen-poor
-fragments</td><td>Pretsch et al. 2009</td></tr>
-<tr><td>Lewis-Senior</td><td>Valence sums that cannot form a connected
-structure</td><td>Senior 1951</td></tr>
-<tr><td>Isotope M+1/M+2</td><td>Formulas whose predicted isotope pattern
-disagrees with the observed spectrum</td><td>Gross 2017</td></tr>
-<tr><td>SMILES ring-count</td><td>Fragments with more rings than the parent
-can supply</td><td>Weininger 1988</td></tr>
-<tr><td>RDKit bond-break</td><td>Heavy-atom formulas unreachable by any
-single bond break</td><td>optional, needs the RDKit .NET assembly</td></tr>
-</table>
-<p>The isotope filter uses the spectrum itself, so it is the most powerful of
-the six on halogenated compounds -- but it needs real intensity contrast to
-work.</p>
+<div class="page-footer">
+  <img src="data:image/png;base64,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" alt="Agilent">
+  <span class="footer-right">EI Fragment Calculator &middot; Internal Use Only</span>
 </div>
 
-<div class="card">
-<h2>Structural fragmentation rules</h2>
-<p>When the library entry carries a MOL block, four rules build a whitelist of
-formulas that a real EI fragmentation could produce. A candidate matching the
-whitelist receives the largest single bonus in the scoring model.</p>
-<table>
-<tr><th>Rule</th><th>Covers</th></tr>
-<tr><td>Homolytic cleavage</td><td>Every non-ring single bond broken -- the
-general sigma-bond case</td></tr>
-<tr><td>Alpha-cleavage</td><td>C-C bonds alpha to N/O/S/halogen; dominant for
-aldehydes, amines, ethers and halides</td></tr>
-<tr><td>McLafferty rearrangement</td><td>gamma-H migration to a carbonyl via a
-six-membered transition state</td></tr>
-<tr><td>Retro-Diels-Alder</td><td>Six-membered rings containing C=C splitting
-into diene and dienophile</td></tr>
-</table>
-</div>
 
-<div class="card">
-<h2>Reading the preview</h2>
-<p>One line per assigned peak: nominal m/z, relative intensity, the assigned
-exact mass, the formula, EE or OE, and the neutral loss from the molecular
-ion. Tags: <code>[Nopt]</code> means N candidates were possible and one was
-chosen; <code>*</code> means the formula matched the structural whitelist;
-<code>[ion]</code> names a hit in the stable-ion library.</p>
-<p>A high <code>[Nopt]</code> count on a compound is the signal to enable more
-filters or to supply a MOL block.</p>
-</div>
+<script>
+(function() {
+  var tocLinks = document.querySelectorAll('.toc-list a[href^="#"]');
+  if (!tocLinks.length) return;
+  var sections = [];
+  tocLinks.forEach(function(a) {
+    var el = document.getElementById(a.getAttribute('href').slice(1));
+    if (el) sections.push(el);
+  });
+  if (!sections.length) return;
 
-<div class="card">
-<h2>Notes and limits</h2>
-<p><b>Unit mass in, exact mass out.</b> The tool does not measure anything --
-it assigns the most plausible formula to each nominal peak and reports that
-formula's calculated exact mass. It cannot substitute for accurate-mass
-acquisition.</p>
-<p><b>Ambiguity is real.</b> At higher m/z a nominal mass can host many valid
-sub-formulas. The filters and the structural whitelist narrow this, but where
-they cannot, the winning candidate is a ranked guess.</p>
-<p><b>Elements.</b> 30 supported: Al As B Br C Ca Cl Co Cr Cu D F Fe H I K Mg
-Mn N Na Ni O P Pb S Se Si Sn Ti V Zn.</p>
-<p><b>Settings</b> (last folder, min peaks, electron mode, all filter flags
-and all export flags) persist in
-<code>%AppData%\exactmass_libconv\settings.txt</code>.</p>
-</div>
+  function setActive(id) {
+    tocLinks.forEach(function(a) {
+      a.parentElement.classList.toggle('toc-active', a.getAttribute('href') === '#' + id);
+    });
+  }
 
-<div class="card">
-<h2>Relationship to the standalone project</h2>
-<p>A separate CPython project, <b>ei-fragment-calculator</b>, shares this
-tool's chemistry but runs outside MassHunter with a CLI, a tkinter GUI,
-accurate-mass support and a CEF workflow. It does <b>not</b> write MassHunter
-library XML. This script is the MassHunter-hosted member of the pair and is
-the one to use when the output has to go back into a library.</p>
-</div>
+  function update() {
+    // When scrolled to (or near) the bottom, always highlight the last section.
+    if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 10) {
+      setActive(sections[sections.length - 1].id);
+      return;
+    }
+    // Otherwise highlight the last section whose heading has scrolled above
+    // 35% of the viewport height.
+    var threshold = window.scrollY + window.innerHeight * 0.35;
+    var current = sections[0];
+    for (var i = 0; i < sections.length; i++) {
+      if (sections[i].getBoundingClientRect().top + window.scrollY <= threshold) {
+        current = sections[i];
+      }
+    }
+    setActive(current.id);
+  }
 
-<div class="foot">EI Fragment Calculator v3.1 &middot; Internal
-user-contributed tooling</div>
-</div></body></html>
+  window.addEventListener('scroll', update, { passive: true });
+  update();
+})();
+</script>
+
+
+</body>
+</html>
 '''
 
 
