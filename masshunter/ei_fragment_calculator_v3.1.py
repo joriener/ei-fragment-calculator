@@ -76,6 +76,15 @@
 #             now docked to the form before any child is added. Same trap
 #             the style guide documents for the banner "?" button.
 #
+#   v3.2      RDKit setup dialog, reached from a new banner "RDKit..."
+#             button. Downloads RDKit.DotNetWrap from nuget.org,
+#             extracts the managed assembly plus the natives matching
+#             THIS process architecture into a per-user folder needing
+#             no elevation, puts them on the process PATH and loads them
+#             without a MassHunter restart. Also fixes the assembly name
+#             (RDKit2DotNet.dll, not RDKit2DotNetStandard.dll -- the
+#             latter does not exist in the package).
+#
 #   Style     Agilent WinForms Desktop App Style Guide: 56-px brand banner,
 #             version label, banner "?", About dialog with the verbatim
 #             disclaimer, embedded readme, embedded multi-resolution icon,
@@ -139,7 +148,7 @@ from System.Windows.Forms import (
 # =============================================================================
 # Style guide section 11 -- shown in the banner, title bar and MessageBoxes.
 APP_TITLE   = "EI Fragment Calculator"
-APP_VERSION = "3.1.2"
+APP_VERSION = "3.2"
 APP_SLUG    = "ei_fragment_calculator"
 
 # Style guide section 2 -- canonical palette, built once and reused.
@@ -211,7 +220,7 @@ def apply_icon(form):
         pass
 
 
-def build_banner(form, on_about):
+def build_banner(form, on_about, on_rdkit=None):
     """Style guide section 6 -- the verified 56-px brand banner.
 
     Two documented WinForms traps are handled here:
@@ -261,10 +270,34 @@ def build_banner(form, on_about):
     help_btn.Click    += on_about
     banner.Controls.Add(help_btn)
 
+    rdk_btn = None
+    if on_rdkit is not None:
+        rdk_btn = Button()
+        rdk_btn.Text      = "RDKit..."
+        rdk_btn.Font      = FONT_LABEL
+        rdk_btn.Width     = 84
+        rdk_btn.Height    = 26
+        rdk_btn.Top       = 15
+        rdk_btn.FlatStyle = FlatStyle.Flat
+        rdk_btn.BackColor = C_BLUE_DK
+        rdk_btn.ForeColor = Color.White
+        rdk_btn.FlatAppearance.BorderSize = 0
+        rdk_btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(0x00, 0x33, 0x55)
+        rdk_btn.Cursor    = System.Windows.Forms.Cursors.Hand
+        rdk_btn.Click    += on_rdkit
+        banner.Controls.Add(rdk_btn)
+
+    # Reposition on resize rather than anchoring: a docked banner is still
+    # narrower than the form when its children are added, so an Anchor would
+    # snapshot the wrong X and put these buttons off-screen (style guide 6).
     def _pos_help(sender, ev):
         help_btn.Left = banner.Width - help_btn.Width - 14
+        if rdk_btn is not None:
+            rdk_btn.Left = help_btn.Left - rdk_btn.Width - 8
     banner.Resize += _pos_help
     help_btn.Left  = form.Width - help_btn.Width - 30
+    if rdk_btn is not None:
+        rdk_btn.Left = help_btn.Left - rdk_btn.Width - 8
 
     return banner
 
@@ -416,35 +449,343 @@ def _GetOwnerForm():
     return None
 
 
-# ------------------------------------------------------------------
-# RDKit .NET detection  (GraphMolWrap.dll -- optional)
-# ------------------------------------------------------------------
-# If the RDKit Windows .NET package is installed and its DLL is on
-# the .NET assembly search path, GraphMolWrap is loaded here.
-# The flag RDKIT_LOADED controls whether the RDKit filter checkbox
-# is enabled and whether flt_rdkit() performs real checks.
-#
-# Installation:
-#   1. Download the RDKit Windows release from
-#      https://github.com/rdkit/rdkit/releases
-#      (e.g. RDKit_2024_09_3_win64.zip)
-#   2. Copy GraphMolWrap.dll (and its companion .dll files) to a
-#      directory on the system PATH, or to the MassHunter installation
-#      directory, or add its folder to PYTHONPATH / .NET probing paths.
-#   3. Restart MassHunter.  The RDKit checkbox will become enabled.
-RDKIT_LOADED = False
-_RdkRWMol    = None    # GraphMolWrap.RWMol class, or None
 
-try:
-    # clr.AddReferenceToFileAndPath() loads by full path -- the only
-    # reliable method in IronPython when the DLL is not in the GAC or
-    # the MassHunter application directory.
-    _rdkit_dll = r"C:\Windows\System32\RDKit2DotNetStandard.dll"
-    clr.AddReferenceToFileAndPath(_rdkit_dll)
-    from GraphMolWrap import RWMol as _RdkRWMol
-    RDKIT_LOADED = True
-except:
-    pass
+# =============================================================================
+# SECTION 1b: RDKit .NET support -- detection, download, load
+# =============================================================================
+# The RDKit bond-break filter needs the SWIG-generated .NET wrapper. Getting
+# it in place by hand is the single most error-prone step in this tool, for
+# three reasons that are easy to get wrong and give no useful error:
+#
+#   1. THE MANAGED ASSEMBLY IS CALLED RDKit2DotNet.dll.
+#      v3.0/v3.1 looked for "RDKit2DotNetStandard.dll", which does not exist
+#      in the distributed package at all -- verified against
+#      RDKit.DotNetWrap 0.2021094.2, whose only managed assemblies are
+#      lib/netstandard2.0/RDKit2DotNet.dll and
+#      lib/netcoreapp3.1/RDKit2DotNet.dll.
+#
+#   2. IT HAS ~106 NATIVE DEPENDENCIES.
+#      The managed assembly P/Invokes into boost/RDKit native DLLs shipped
+#      under runtimes/win-x86/native/ and runtimes/win-x64/native/. Copying
+#      only the managed DLL (for instance into System32) can never work: the
+#      first real call fails to resolve its native entry points.
+#
+#   3. THE ARCHITECTURE MUST MATCH THE HOST PROCESS.
+#      MassHunter Library Editor (LibraryEdit.exe, under
+#      ...\Workstation\Quant\bin) is a 32-bit PE32 image, so it needs the
+#      win-x86 natives. Installing win-x64 raises BadImageFormatException.
+#      _rdkit_arch() reads IntPtr.Size at runtime rather than assuming.
+#
+# The installer below downloads the NuGet package, extracts the managed
+# assembly plus the natives for THIS process architecture into a per-user
+# folder that needs no elevation, puts the native folder on the process PATH
+# so the P/Invokes resolve, and then loads the assembly.
+
+RDKIT_NUGET_ID      = "rdkit.dotnetwrap"
+RDKIT_NUGET_VERSION = "0.2021094.2"   # pinned known-good; see _rdkit_latest()
+RDKIT_INDEX_URL     = ("https://api.nuget.org/v3-flatcontainer/"
+                       "rdkit.dotnetwrap/index.json")
+RDKIT_NUPKG_FMT     = ("https://api.nuget.org/v3-flatcontainer/"
+                       "rdkit.dotnetwrap/{0}/rdkit.dotnetwrap.{0}.nupkg")
+RDKIT_MANAGED_ENTRY = "lib/netstandard2.0/RDKit2DotNet.dll"
+RDKIT_MANAGED_NAME  = "RDKit2DotNet.dll"
+RDKIT_NUGET_PAGE    = "https://www.nuget.org/packages/RDKit.DotNetWrap"
+
+# Legacy location tried by v3.0/v3.1. Kept only so an existing hand-made
+# installation keeps working.
+RDKIT_LEGACY_DLL = r"C:\Windows\System32\RDKit2DotNetStandard.dll"
+
+RDKIT_LOADED   = False
+RDKIT_PATH     = None     # full path of the assembly actually loaded
+RDKIT_STATUS   = "not loaded"
+_RdkRWMol      = None     # GraphMolWrap.RWMol class, or None
+
+
+def _rdkit_arch():
+    """"win-x86" or "win-x64" for the CURRENT process, from IntPtr.Size."""
+    try:
+        from System import IntPtr
+        return "win-x64" if IntPtr.Size == 8 else "win-x86"
+    except:
+        return "win-x86"
+
+
+def rdkit_install_dir():
+    """Per-user install folder -- no elevation needed, unlike System32."""
+    appdata = Environment.GetFolderPath(
+        Environment.SpecialFolder.ApplicationData)
+    return Path.Combine(Path.Combine(appdata, "exactmass_libconv"), "rdkit")
+
+
+def _rdkit_native_dir(base=None):
+    return Path.Combine(base or rdkit_install_dir(), "native")
+
+
+def _rdkit_add_native_to_path(native_dir):
+    """Prepend the native folder to the PROCESS PATH so the managed
+    assembly's P/Invokes resolve. Process scope only -- nothing persists
+    outside this MassHunter session."""
+    try:
+        from System import EnvironmentVariableTarget
+        cur = Environment.GetEnvironmentVariable("PATH") or ""
+        if native_dir.lower() not in cur.lower():
+            Environment.SetEnvironmentVariable(
+                "PATH", native_dir + ";" + cur,
+                EnvironmentVariableTarget.Process)
+        return True
+    except:
+        return False
+
+
+def try_load_rdkit(dll_path=None, log_fn=None):
+    """Attempt to load the RDKit .NET wrapper.
+
+    Tries, in order: the path given, the per-user install folder, then the
+    legacy System32 name v3.0 used. Sets the module globals RDKIT_LOADED,
+    RDKIT_PATH, RDKIT_STATUS and _RdkRWMol.
+
+    Returns (ok, message). Safe to call repeatedly, so the setup dialog can
+    enable the filter without restarting MassHunter.
+    """
+    global RDKIT_LOADED, RDKIT_PATH, RDKIT_STATUS, _RdkRWMol
+
+    def _log(m):
+        if log_fn:
+            try:
+                log_fn(m)
+            except:
+                pass
+
+    candidates = []
+    if dll_path:
+        candidates.append(dll_path)
+    candidates.append(Path.Combine(rdkit_install_dir(), RDKIT_MANAGED_NAME))
+    candidates.append(RDKIT_LEGACY_DLL)
+
+    last_err = ""
+    for cand in candidates:
+        try:
+            if not File.Exists(cand):
+                continue
+        except:
+            continue
+        native = _rdkit_native_dir(Path.GetDirectoryName(cand))
+        try:
+            if Directory.Exists(native):
+                _rdkit_add_native_to_path(native)
+        except:
+            pass
+        try:
+            # AddReferenceToFileAndPath loads by full path -- the only
+            # reliable method in IronPython for an assembly that is not in
+            # the GAC or the application directory.
+            clr.AddReferenceToFileAndPath(cand)
+            from GraphMolWrap import RWMol as _RW
+            _RdkRWMol    = _RW
+            RDKIT_LOADED = True
+            RDKIT_PATH   = cand
+            RDKIT_STATUS = "loaded from " + cand
+            _log("[OK] RDKit loaded: " + cand)
+            return True, RDKIT_STATUS
+        except Exception as ex:
+            try:
+                last_err = ex.ToString()
+            except:
+                last_err = str(ex)
+            _log("[FAIL] " + cand + "\n       " + last_err)
+
+    RDKIT_LOADED = False
+    RDKIT_PATH   = None
+    RDKIT_STATUS = ("not found" if not last_err
+                    else "found but would not load: " + last_err)
+    return False, RDKIT_STATUS
+
+
+def _rdkit_latest_version(log_fn=None):
+    """Ask nuget.org for the newest version. Falls back to the pinned one.
+
+    The response is a small JSON document; there is no json module in this
+    host, so the version list is scanned out of the raw text.
+    """
+    try:
+        _rdkit_enable_tls12()
+        from System.Net import WebClient
+        wc = WebClient()
+        wc.Headers.Add("User-Agent", APP_SLUG + "/" + APP_VERSION)
+        txt = wc.DownloadString(RDKIT_INDEX_URL)
+        vers = []
+        i = txt.find("[")
+        if i >= 0:
+            for tok in txt[i:].replace("[", "").replace("]", "").split(","):
+                t = tok.strip().strip('"').strip()
+                if t:
+                    vers.append(t)
+        if vers:
+            return vers[-1]
+    except Exception as ex:
+        if log_fn:
+            log_fn("[warn] could not query nuget.org, using pinned "
+                   + RDKIT_NUGET_VERSION)
+    return RDKIT_NUGET_VERSION
+
+
+def _rdkit_enable_tls12():
+    """nuget.org requires TLS 1.2. .NET Framework targets below 4.6 default
+    ServicePointManager to SSL3 + TLS 1.0, so it must be enabled explicitly.
+    Written as a numeric cast because the named Tls12 member does not exist
+    if the host compiled against 4.0 -- same approach as the PubChem script.
+    """
+    try:
+        from System.Net import ServicePointManager, SecurityProtocolType
+        ServicePointManager.SecurityProtocol = (
+            ServicePointManager.SecurityProtocol | SecurityProtocolType(3072))
+    except:
+        try:
+            from System.Net import ServicePointManager
+            ServicePointManager.SecurityProtocol = 3072
+        except:
+            pass
+
+
+def rdkit_download_and_install(log_fn, version=None):
+    """Download the NuGet package and extract what this process needs.
+
+    Returns (ok, managed_dll_path_or_message).
+    """
+    def _log(m):
+        try:
+            log_fn(m)
+        except:
+            pass
+
+    base   = rdkit_install_dir()
+    native = _rdkit_native_dir(base)
+    arch   = _rdkit_arch()
+
+    try:
+        if not Directory.Exists(base):
+            Directory.CreateDirectory(base)
+        if not Directory.Exists(native):
+            Directory.CreateDirectory(native)
+    except Exception as ex:
+        return False, "Could not create " + base + ": " + str(ex)
+
+    ver = version or _rdkit_latest_version(_log)
+    url = RDKIT_NUPKG_FMT.format(ver)
+    pkg = Path.Combine(base, "rdkit.dotnetwrap." + ver + ".nupkg")
+
+    _log("Process architecture : " + arch + "  (from IntPtr.Size)")
+    _log("Install folder       : " + base)
+    _log("Package version      : " + ver)
+    _log("")
+
+    # ---- download -------------------------------------------------------
+    try:
+        if File.Exists(pkg):
+            _log("[skip] package already downloaded")
+        else:
+            _rdkit_enable_tls12()
+            from System.Net import WebClient
+            wc = WebClient()
+            wc.Headers.Add("User-Agent", APP_SLUG + "/" + APP_VERSION)
+            _log("Downloading ~27 MB from nuget.org ...")
+            wc.DownloadFile(url, pkg)
+            _log("[OK] downloaded " + pkg)
+    except Exception as ex:
+        try:
+            det = ex.ToString()
+        except:
+            det = str(ex)
+        return False, ("Download failed.\n\n" + det +
+                       "\n\nDownload it manually from\n" +
+                       RDKIT_NUGET_PAGE +
+                       "\nthen use 'Locate an existing RDKit2DotNet.dll'.")
+
+    # ---- extract --------------------------------------------------------
+    try:
+        clr.AddReference("System.IO.Compression.FileSystem")
+        from System.IO.Compression import ZipFile
+    except Exception as ex:
+        return False, ("This host cannot open zip archives "
+                       "(System.IO.Compression.FileSystem unavailable): "
+                       + str(ex) +
+                       "\n\nExtract " + pkg + " by hand -- it is a zip file "
+                       "-- then use 'Locate an existing RDKit2DotNet.dll'.")
+
+    managed_out = Path.Combine(base, RDKIT_MANAGED_NAME)
+    native_pref = "runtimes/" + arch + "/native/"
+    n_native = 0
+    try:
+        z = ZipFile.OpenRead(pkg)
+        try:
+            for entry in z.Entries:
+                name = entry.FullName
+                if name == RDKIT_MANAGED_ENTRY:
+                    _extract_entry(entry, managed_out)
+                    _log("[OK] " + RDKIT_MANAGED_NAME)
+                elif (name.startswith(native_pref)
+                      and name.lower().endswith(".dll")):
+                    leaf = name[len(native_pref):]
+                    if leaf and "/" not in leaf:
+                        _extract_entry(entry, Path.Combine(native, leaf))
+                        n_native += 1
+        finally:
+            z.Dispose()
+    except Exception as ex:
+        try:
+            det = ex.ToString()
+        except:
+            det = str(ex)
+        return False, "Extraction failed: " + det
+
+    _log("[OK] {0} native DLLs -> {1}".format(n_native, native))
+    if not File.Exists(managed_out):
+        return False, ("The package did not contain " + RDKIT_MANAGED_ENTRY +
+                       ". Its layout may have changed; extract it by hand and "
+                       "use 'Locate an existing RDKit2DotNet.dll'.")
+    if n_native == 0:
+        _log("[warn] no natives extracted for " + arch +
+             " -- the filter will load but fail on first use")
+
+    _log("")
+    _log("Loading ...")
+    ok, msg = try_load_rdkit(managed_out, _log)
+    if ok:
+        try:
+            c = load_config()
+            c['rdkit_path'] = managed_out
+            save_config(c)
+            _log("[OK] path remembered for next start")
+        except:
+            pass
+    return ok, (managed_out if ok else msg)
+
+
+def _extract_entry(entry, dest):
+    """Write one zip entry to dest, overwriting. ExtractToFile's overwrite
+    overload is not present on every framework version, so the file is
+    removed first."""
+    try:
+        if File.Exists(dest):
+            File.Delete(dest)
+    except:
+        pass
+    from System.IO.Compression import ZipFileExtensions
+    try:
+        ZipFileExtensions.ExtractToFile(entry, dest, True)
+    except:
+        # Fall back to a manual stream copy.
+        src = entry.Open()
+        try:
+            out = File.Create(dest)
+            try:
+                src.CopyTo(out)
+            finally:
+                out.Close()
+        finally:
+            src.Close()
+
+
 
 # ==================================================================
 # SECTION 2: Physical constants
@@ -2577,6 +2918,16 @@ cfg      = load_config()
 last_dir = [cfg.get('last_dir', "C:\\")]
 
 
+# ---------------------------------------------------------------------------
+# Initial RDKit load attempt (SECTION 1b defines the loader; config is now
+# available, so a remembered path can be honoured).
+# ---------------------------------------------------------------------------
+try:
+    try_load_rdkit(cfg.get('rdkit_path', None))
+except:
+    pass
+
+
 # =============================================================================
 # SECTION 13b: Readme / About dialog   (style guide sections 7 and 8)
 # =============================================================================
@@ -2858,8 +3209,313 @@ def show_about(owner_form):
 
 
 # =============================================================================
+# RDKit setup dialog
+# =============================================================================
+
+def show_rdkit_setup(owner_form, on_state_change=None):
+    """Install or locate the RDKit .NET wrapper, and load it without a
+    restart. Reached from the banner "RDKit..." button.
+
+    on_state_change is called after a successful load so the caller can
+    enable the RDKit filter checkbox.
+    """
+    dlg = Form()
+    dlg.Text            = "RDKit setup"
+    dlg.Size            = Size(760, 560)
+    dlg.BackColor       = C_BG
+    dlg.FormBorderStyle = FormBorderStyle.FixedDialog
+    dlg.MaximizeBox     = False
+    dlg.MinimizeBox     = False
+    dlg.StartPosition   = FormStartPosition.CenterParent
+    apply_icon(dlg)
+
+    hdr = Panel()
+    hdr.Dock      = DockStyle.Top
+    hdr.Height    = BANNER_HEIGHT
+    hdr.BackColor = C_BLUE
+    ht = Label()
+    ht.Text      = "RDKit setup"
+    ht.Font      = FONT_BANNER
+    ht.ForeColor = Color.White
+    ht.BackColor = C_BLUE
+    ht.AutoSize  = True
+    ht.Location  = Point(16, 16)
+    hdr.Controls.Add(ht)
+
+    body = Panel()
+    body.Dock      = DockStyle.Fill
+    body.BackColor = C_BG
+    # Dock BEFORE adding children so Right/Bottom anchors get the real width.
+    dlg.Controls.Add(body)
+
+    y = 12
+
+    lbl_status = Label()
+    lbl_status.Font      = FONT_LABEL_B
+    lbl_status.ForeColor = C_DARK
+    lbl_status.Location  = Point(14, y)
+    lbl_status.Size      = Size(710, 20)
+    body.Controls.Add(lbl_status)
+    y += 24
+
+    lbl_arch = Label()
+    lbl_arch.Font      = FONT_LABEL
+    lbl_arch.ForeColor = C_MUTED
+    lbl_arch.Location  = Point(14, y)
+    lbl_arch.Size      = Size(710, 34)
+    lbl_arch.Text      = (
+        "This MassHunter process is {0}, so the {1} native libraries are "
+        "required.\nInstall folder: {2}".format(
+            "64-bit" if _rdkit_arch() == "win-x64" else "32-bit",
+            _rdkit_arch(), rdkit_install_dir()))
+    body.Controls.Add(lbl_arch)
+    y += 42
+
+    def refresh_status():
+        if RDKIT_LOADED:
+            lbl_status.ForeColor = Color.FromArgb(0x1B, 0x7F, 0x3B)
+            lbl_status.Text = "RDKit is LOADED  --  " + str(RDKIT_PATH)
+        else:
+            lbl_status.ForeColor = Color.FromArgb(0x8A, 0x1F, 0x1F)
+            lbl_status.Text = "RDKit is NOT loaded  --  " + str(RDKIT_STATUS)
+
+    refresh_status()
+
+    # ---- automatic install ---------------------------------------------
+    grp_auto = GroupBox()
+    grp_auto.Text     = "Option 1 -- download and install automatically"
+    grp_auto.Font     = FONT_LABEL_B
+    grp_auto.ForeColor = C_DARK
+    grp_auto.Location = Point(14, y)
+    grp_auto.Size     = Size(714, 96)
+    body.Controls.Add(grp_auto)
+
+    lbl_auto = Label()
+    lbl_auto.Font      = FONT_LABEL
+    lbl_auto.ForeColor = C_BODY
+    lbl_auto.Location  = Point(12, 22)
+    lbl_auto.Size      = Size(688, 34)
+    lbl_auto.Text      = (
+        "Downloads RDKit.DotNetWrap from nuget.org (about 27 MB), extracts "
+        "the managed assembly\nand the matching native libraries, and loads "
+        "it. No administrator rights needed.")
+    grp_auto.Controls.Add(lbl_auto)
+
+    btn_auto = Button()
+    btn_auto.Text     = "Download and install"
+    btn_auto.Location = Point(12, 60)
+    btn_auto.Size     = Size(160, 26)
+    style_button(btn_auto, primary=True)
+    grp_auto.Controls.Add(btn_auto)
+
+    btn_page = Button()
+    btn_page.Text     = "Open nuget.org page"
+    btn_page.Location = Point(182, 60)
+    btn_page.Size     = Size(150, 26)
+    style_button(btn_page, primary=False)
+    grp_auto.Controls.Add(btn_page)
+
+    y += 104
+
+    # ---- manual path ----------------------------------------------------
+    grp_man = GroupBox()
+    grp_man.Text      = "Option 2 -- locate an existing RDKit2DotNet.dll"
+    grp_man.Font      = FONT_LABEL_B
+    grp_man.ForeColor = C_DARK
+    grp_man.Location  = Point(14, y)
+    grp_man.Size      = Size(714, 96)
+    body.Controls.Add(grp_man)
+
+    lbl_man = Label()
+    lbl_man.Font      = FONT_LABEL
+    lbl_man.ForeColor = C_BODY
+    lbl_man.Location  = Point(12, 22)
+    lbl_man.Size      = Size(688, 30)
+    lbl_man.Text      = (
+        "Point at the managed assembly. Its native libraries must sit in a "
+        "'native' sub-folder\nbeside it, or already be on the PATH.")
+    grp_man.Controls.Add(lbl_man)
+
+    txt_path = TextBox()
+    txt_path.Location = Point(12, 58)
+    txt_path.Size     = Size(500, 22)
+    txt_path.Font     = FONT_LABEL
+    try:
+        txt_path.Text = load_config().get('rdkit_path', "") or ""
+    except:
+        txt_path.Text = ""
+    grp_man.Controls.Add(txt_path)
+
+    btn_browse = Button()
+    btn_browse.Text     = "Browse..."
+    btn_browse.Location = Point(520, 57)
+    btn_browse.Size     = Size(88, 25)
+    style_button(btn_browse, primary=False)
+    grp_man.Controls.Add(btn_browse)
+
+    btn_load = Button()
+    btn_load.Text     = "Load"
+    btn_load.Location = Point(616, 57)
+    btn_load.Size     = Size(84, 25)
+    style_button(btn_load, primary=False)
+    grp_man.Controls.Add(btn_load)
+
+    y += 104
+
+    txt_log = TextBox()
+    txt_log.Location   = Point(14, y)
+    txt_log.Size       = Size(714, 150)
+    txt_log.Font       = FONT_MONO
+    txt_log.Multiline  = True
+    txt_log.ReadOnly   = True
+    txt_log.BackColor  = C_CARD
+    txt_log.ForeColor  = C_BODY
+    txt_log.ScrollBars = ScrollBars.Both
+    txt_log.Anchor     = (AnchorStyles.Top | AnchorStyles.Bottom |
+                          AnchorStyles.Left | AnchorStyles.Right)
+    body.Controls.Add(txt_log)
+
+    btn_close = Button()
+    btn_close.Text     = "Close"
+    btn_close.Location = Point(624, y + 158)
+    btn_close.Size     = Size(104, 27)
+    btn_close.Anchor   = (AnchorStyles.Bottom | AnchorStyles.Right)
+    style_button(btn_close, primary=False)
+    body.Controls.Add(btn_close)
+
+    def log(msg):
+        def _a():
+            txt_log.AppendText(str(msg) + "\r\n")
+        try:
+            if txt_log.InvokeRequired:
+                txt_log.BeginInvoke(Action(_a))
+            else:
+                _a()
+        except:
+            pass
+
+    def finish(ok):
+        refresh_status()
+        if ok and on_state_change:
+            try:
+                on_state_change()
+            except:
+                pass
+
+    def on_auto(sender, args):
+        btn_auto.Enabled = False
+        btn_auto.Text    = "Working..."
+        btn_auto.BackColor = C_BLUE_MUTE
+        txt_log.Clear()
+        try:
+            ok, msg = rdkit_download_and_install(log)
+            log("")
+            if ok:
+                log("RDKit is ready. The RDKit filter checkbox is now "
+                    "enabled.")
+            else:
+                log("FAILED: " + str(msg))
+            finish(ok)
+        except Exception as ex:
+            try:
+                log("UNEXPECTED: " + ex.ToString())
+            except:
+                log("UNEXPECTED: " + str(ex))
+        finally:
+            btn_auto.Enabled = True
+            btn_auto.Text    = "Download and install"
+            btn_auto.BackColor = C_BLUE
+
+    def on_page(sender, args):
+        try:
+            System.Diagnostics.Process.Start(RDKIT_NUGET_PAGE)
+        except Exception as ex:
+            log("Could not open browser: " + str(ex))
+
+    def on_browse(sender, args):
+        d = OpenFileDialog()
+        d.Title  = "Select RDKit2DotNet.dll"
+        d.Filter = "RDKit managed assembly (RDKit2DotNet.dll)|RDKit2DotNet.dll|Assemblies (*.dll)|*.dll|All (*.*)|*.*"
+        # Owned by THIS dialog -- see the 3.1.1 note in the header.
+        if d.ShowDialog(dlg) == DialogResult.OK:
+            txt_path.Text = d.FileName
+
+    def on_load(sender, args):
+        p = txt_path.Text.strip()
+        if not p:
+            log("Enter or browse to a path first.")
+            return
+        txt_log.Clear()
+        ok, msg = try_load_rdkit(p, log)
+        log("")
+        log(("OK: " + msg) if ok else ("FAILED: " + msg))
+        if ok:
+            try:
+                c = load_config()
+                c['rdkit_path'] = p
+                save_config(c)
+                log("Path remembered for next start.")
+            except:
+                pass
+        finish(ok)
+
+    btn_auto.Click   += on_auto
+    btn_page.Click   += on_page
+    btn_browse.Click += on_browse
+    btn_load.Click   += on_load
+    btn_close.Click  += lambda s, e: dlg.Close()
+
+    dlg.Controls.Add(hdr)
+
+    log("RDKit is optional. Every other filter works without it.")
+    log("")
+    log("Why this needs a helper rather than copying one file:")
+    log("  * the managed assembly is RDKit2DotNet.dll, not")
+    log("    RDKit2DotNetStandard.dll as v3.0/v3.1 assumed;")
+    log("  * it P/Invokes into about 106 native boost/RDKit DLLs, so the")
+    log("    managed DLL alone can never work;")
+    log("  * the natives must match this process ({0}).".format(_rdkit_arch()))
+    log("")
+
+    if owner_form is not None:
+        dlg.ShowDialog(owner_form)
+    else:
+        dlg.ShowDialog()
+    dlg.Dispose()
+
+
+# =============================================================================
 # SECTION 14: GUI
 # =============================================================================
+
+def park_number_boxes(container):
+    """Scroll every NumericUpDown under `container` back to its first character.
+
+    v1.2 FIX: a NumericUpDown paints its value in a child text box that can be
+    left scrolled sideways, and then the leading digits are simply not on
+    screen. Observed in the sibling tool UA_ConvertNonHitsToHits running
+    inside Unknowns Analysis: a box holding 3.0 showed nothing but the
+    right-hand sliver of the 0, pinned to the left of an otherwise empty
+    field, while Value was still correct. The construction pattern here is
+    the same, so the same guard is applied.
+
+    Widening the control does NOT clear it -- only moving the caret back does
+    (both verified on MassHunter's own IronPython 2.7.5 engine). Wired to
+    each form's Shown event, because the layout pass that can leave a box
+    scrolled runs as the window is shown.
+    """
+    try:
+        for c in container.Controls:
+            if isinstance(c, NumericUpDown):
+                try:
+                    c.Select(0, 0)
+                except Exception:
+                    pass
+            elif c.Controls.Count > 0:
+                park_number_boxes(c)
+    except Exception:
+        pass
+
 
 def _Run():
     """Build and show the GUI. Everything else now lives at module level
@@ -2880,6 +3536,9 @@ def _Run():
         #   Row 6  y=243  Log text box (fills remaining space)
 
         form = Form()
+        # v1.2: see park_number_boxes() -- the layout pass that runs as the
+        # window is shown can leave a number box scrolled sideways.
+        form.Shown += lambda s, e: park_number_boxes(form)
         form.Text      = APP_TITLE + "  v" + APP_VERSION
         form.Size      = Size(960, 810)   # +56 for the brand banner
         form.BackColor = C_BG
@@ -2995,11 +3654,28 @@ def _Run():
         chk_isotope  = _mk_chk("Isotope M+1/M+2",      10,  48, 'flt_isotope',  True)
         chk_smiles   = _mk_chk("SMILES ring-count",   175,  48, 'flt_smiles',   True)
         rdkit_label  = ("RDKit (bond-break check)" if RDKIT_LOADED
-                        else "RDKit (install RDKit2DotNetStandard.dll)")
+                        else "RDKit -- use 'RDKit...' in the banner")
         chk_rdkit    = _mk_chk(rdkit_label, 380, 48, 'flt_rdkit', False)
         if not RDKIT_LOADED:
             chk_rdkit.Enabled = False   # greyed out until DLL is present
             chk_rdkit.Checked = False
+
+        def _refresh_rdkit_state():
+            """Called by the RDKit setup dialog after a successful load,
+            so the filter becomes usable without a restart."""
+            try:
+                if RDKIT_LOADED:
+                    chk_rdkit.Text    = "RDKit (bond-break check)"
+                    chk_rdkit.Enabled = True
+                else:
+                    chk_rdkit.Text    = "RDKit -- use 'RDKit...' in the banner"
+                    chk_rdkit.Enabled = False
+                    chk_rdkit.Checked = False
+            except:
+                pass
+
+        def _on_rdkit(s, e):
+            show_rdkit_setup(form, _refresh_rdkit_state)
 
         # ---- Row 4b: Export format checkboxes ----
         y += 92   # GroupBox height (78) + margin (14)
@@ -3409,7 +4085,7 @@ def _Run():
         # content was docked before its children (see above); the
         # banner goes on LAST so it claims the top edge first and the
         # Fill panel shrinks to what is left (style guide section 4).
-        form.Controls.Add(build_banner(form, _on_about))
+        form.Controls.Add(build_banner(form, _on_about, _on_rdkit))
 
         # Show the form (modal relative to MassHunter main window).
         if owner is not None:

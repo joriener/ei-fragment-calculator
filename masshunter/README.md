@@ -1,4 +1,4 @@
-# MassHunter sibling — EI Fragment Calculator v3.1
+# MassHunter sibling — EI Fragment Calculator v3.2
 
 This folder holds the **MassHunter-hosted** member of the EI Fragment
 Calculator family. It is not part of the `ei_fragment_calculator` Python
@@ -80,6 +80,40 @@ the ratio holds.
 > non-English-locale workstation carries corrupted m/z and abundance values
 > and should be regenerated with v3.1.**
 
+## New in 3.2 -- RDKit installable from the GUI
+
+A banner **RDKit...** button opens a setup dialog that either downloads and
+installs the RDKit .NET wrapper, or loads one you already have, and enables
+the filter **without restarting MassHunter**.
+
+| Option | What it does |
+|---|---|
+| Download and install | Fetches `RDKit.DotNetWrap` from nuget.org (~27 MB), extracts the managed assembly and the natives matching *this* process, puts them on the process PATH, loads them |
+| Locate an existing `RDKit2DotNet.dll` | Browse and load |
+| Open nuget.org page | Fallback if the download is blocked |
+
+Install target is `%AppData%\exactmass_libconvdkit\` -- per-user, so **no
+administrator rights**. The path is remembered for next start.
+
+### Why a helper, not a file copy
+
+Verified against `RDKit.DotNetWrap 0.2021094.2`:
+
+1. **The managed assembly is `RDKit2DotNet.dll`.** v3.0/v3.1 looked for
+   `RDKit2DotNetStandard.dll`, which **does not exist in the package**.
+2. **~106 native dependencies.** It P/Invokes into boost/RDKit natives under
+   `runtimes/<arch>/native/`; the managed DLL alone can never work.
+3. **Architecture must match.** `LibraryEdit.exe` is a 32-bit PE32 image, so
+   it needs `win-x86`; `win-x64` raises `BadImageFormatException`.
+   `_rdkit_arch()` reads `IntPtr.Size` at runtime.
+
+> **Unverified in the host.** The nuget URLs, package layout (1 managed + 106
+> natives per arch) and the entry-matching logic were all checked against the
+> real 27 MB package, and `System.IO.Compression.FileSystem` is present on
+> .NET 4.8.1. Not checked: whether IronPython 2.7 can load a `netstandard2.0`
+> assembly here, and whether the native P/Invokes resolve. The dialog log
+> surfaces the real exception if not.
+
 ## Fixed in 3.1.2 -- the Browse buttons were off-screen
 
 The **Input XML** and **Output Path** rows, their **Browse** buttons, the
@@ -99,7 +133,7 @@ This is the same trap this guide documents for the banner `?` button -- it
 applies to any right- or bottom-anchored control whose parent has not been
 sized yet.
 
-**Check the banner reads v3.1.2.** The filename does not carry the patch
+**Check the banner reads v3.2.** The filename does not carry the patch
 level; `APP_VERSION` and the banner do.
 
 ## Fixed in 3.1.1 -- dialog ownership

@@ -1,18 +1,18 @@
-# EI Fragment Calculator — v3.1.2
+# EI Fragment Calculator — v3.2
 
 | | |
 |---|---|
 | **Platform** | MassHunter Library Editor — IronPython 2.7.5, .NET-only, with a WinForms UI |
-| **File** | `ei_fragment_calculator_v3.1.py` (`APP_VERSION = "3.1.2"`) |
+| **File** | `ei_fragment_calculator_v3.1.py` (`APP_VERSION = "3.2"`) |
 | **Repo path** | `masshunter/ei_fragment_calculator_v3.1.py` |
 | **Install folder** | `<MassHunter>\Scripts\LibraryEdit\` |
 | **Settings file** | `%AppData%\exactmass_libconv\settings.txt` |
-| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` → `v3.1.1` → `v3.1.2` |
+| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` → `v3.1.1` → `v3.1.2` → `v3.2` |
 
 > **The filename does not carry the patch level.** The file stays
 > `ei_fragment_calculator_v3.1.py`; the build is identified by `APP_VERSION`
 > in the source and by the version shown in the banner. **Check the banner
-> reads v3.1.2** — if it reads v3.1 or v3.1.1 you are running an older copy.
+> reads v3.2** — anything lower is an older copy.
 
 ### Fixed in 3.1.2 — the Browse buttons were off-screen
 
@@ -32,6 +32,13 @@ the form before any child is added, so the margin is a correct `+6 px`.
 This is the same trap the style guide documents for the banner `?` button
 (§6) — it applies to *any* right- or bottom-anchored control added to a parent
 that has not been sized yet.
+
+### New in 3.2 — RDKit installable from the GUI
+
+A banner **RDKit…** button opens a setup dialog that downloads and
+installs the RDKit .NET wrapper, or loads one you already have, and
+enables the filter without restarting MassHunter. It also corrects the
+assembly name v3.0/v3.1 looked for, which did not exist. See §2.
 
 ### Fixed in 3.1.1 — dialog ownership
 
@@ -96,39 +103,63 @@ No third-party Python packages, and no Python standard library — the
 MassHunter IronPython host does not ship one. Everything is plain Python plus
 .NET types reached through `clr`.
 
-### Optional — RDKit .NET
+### Optional — RDKit .NET, installed from the GUI (new in 3.2)
 
-The **RDKit (bond-break check)** filter needs the RDKit Windows .NET assembly.
-Without it the checkbox is greyed out and labelled *"RDKit (install
-RDKit2DotNetStandard.dll)"*; the other five filters work normally.
+The **RDKit (bond-break check)** filter needs the SWIG-generated RDKit .NET
+wrapper. The other five filters work without it.
 
-To enable it:
+**Click `RDKit…` in the banner.** The setup dialog installs it for you:
 
-1. Download the RDKit Windows release:
+| Option | What it does |
+|---|---|
+| **1 — Download and install** | Fetches `RDKit.DotNetWrap` from nuget.org (~27 MB), extracts the managed assembly and the natives matching **this** process, puts them on the process PATH, and loads them |
+| **2 — Locate an existing `RDKit2DotNet.dll`** | Browse to an assembly you already have and load it |
+| **Open nuget.org page** | Fallback if the download is blocked |
 
-   ```powershell
-   Start-Process "https://github.com/rdkit/rdkit/releases"
-   ```
+The dialog reports the process architecture, the install folder, and a log of
+what happened. On success the filter checkbox becomes usable **without
+restarting MassHunter**, and the path is remembered for next start
+(`rdkit_path` in the settings file).
 
-2. Extract it and put the assembly where the script looks. It loads by full
-   path with `clr.AddReferenceToFileAndPath()` — the only reliable method in
-   IronPython when the DLL is neither in the GAC nor the application
-   directory. The path it tries is `C:\Windows\System32\RDKit2DotNetStandard.dll`:
+Install target is `%AppData%\exactmass_libconv\rdkit\` — a per-user folder, so
+**no administrator rights are needed**.
 
-   ```powershell
-   Expand-Archive "$env:USERPROFILE\Downloads\RDKit_2024_09_3_win64.zip" -DestinationPath "C:\RDKit"
-   Copy-Item "C:\RDKit\RDKit2DotNetStandard.dll" "C:\Windows\System32\" -Force
-   ```
+```powershell
+Get-ChildItem "$env:AppData\exactmass_libconv\rdkit" -Recurse | Measure-Object -Property Length -Sum
+```
 
-   Copying into `System32` needs an elevated PowerShell. Alternatively put
-   `GraphMolWrap.dll` and its companions on the system PATH or in the
-   MassHunter directory and change `_rdkit_dll` near the top of the script.
+#### Why this needs a helper rather than copying one file
 
-3. Restart MassHunter. The checkbox becomes enabled.
+Three things make manual installation fail silently, all verified against
+`RDKit.DotNetWrap 0.2021094.2`:
 
-   ```powershell
-   Test-Path "C:\Windows\System32\RDKit2DotNetStandard.dll"
-   ```
+1. **The managed assembly is `RDKit2DotNet.dll`.** v3.0 and v3.1 looked for
+   `C:\Windows\System32\RDKit2DotNetStandard.dll` — **that filename does not
+   exist in the package at all.** Its only managed assemblies are
+   `lib/netstandard2.0/RDKit2DotNet.dll` and
+   `lib/netcoreapp3.1/RDKit2DotNet.dll`.
+2. **It has ~106 native dependencies.** The managed assembly P/Invokes into
+   boost and RDKit native DLLs under `runtimes/<arch>/native/`. Copying only
+   the managed DLL can never work — the first real call fails to resolve.
+3. **The architecture must match the host process.** `LibraryEdit.exe`
+   (`...\Workstation\Quant\bin`) is a **32-bit PE32** image, so it needs the
+   `win-x86` natives; the `win-x64` set raises `BadImageFormatException`.
+   `_rdkit_arch()` reads `IntPtr.Size` at runtime rather than assuming, so it
+   stays correct on a 64-bit host.
+
+The legacy `System32\RDKit2DotNetStandard.dll` path is still tried last, so an
+existing hand-made installation keeps working.
+
+> **Unverified.** The download, extraction and load path has **not** been
+> executed inside MassHunter. What *is* verified: the nuget.org URLs resolve,
+> the package layout is as described (1 managed assembly + 106 natives per
+> architecture, confirmed by scanning the real 27 MB package), the
+> entry-matching logic selects exactly those files, and
+> `System.IO.Compression.FileSystem` is present on this workstation
+> (.NET Framework 4.8.1). What is **not** verified: whether IronPython 2.7 can
+> load a `netstandard2.0` assembly in this host, and whether the native
+> P/Invokes resolve once loaded. If it fails, the dialog log shows the real
+> exception — send it over.
 
 ---
 
@@ -184,7 +215,7 @@ Six independently toggleable filters. All on by default except RDKit.
 | **Lewis-Senior** | on | Valence sums that cannot form a connected structure | Senior 1951 |
 | **Isotope M+1/M+2** | on | Formulas whose predicted isotope pattern disagrees with the observed spectrum | Gross 2017 |
 | **SMILES ring-count** | on | Fragments with more rings than the parent can supply | Weininger 1988 |
-| **RDKit (bond-break check)** | off | Heavy-atom formulas unreachable by any single bond break | requires the .NET assembly (§2) |
+| **RDKit (bond-break check)** | off | Heavy-atom formulas unreachable by any single bond break | install it from the banner **RDKit…** button (§2) |
 
 The isotope filter is the most powerful of the six on halogenated compounds
 because it uses the spectrum itself — but it needs real intensity contrast.
@@ -206,6 +237,7 @@ Structural fragmentation is applied additionally when the compound has a
 | **Preview** | Runs the identical assignment pipeline and writes nothing |
 | **Convert** | Runs the conversion and writes the ticked formats |
 | **Quit** | Closes the tool |
+| **RDKit…** (banner) | RDKit setup: download and install, or locate an existing assembly (§2) |
 | **?** (banner) | About dialog → **View Readme** for the full embedded guide |
 
 > **Preview and Convert cannot disagree.** As of v3.1 both call one
