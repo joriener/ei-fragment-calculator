@@ -1,4 +1,4 @@
-# MassHunter sibling — EI Fragment Calculator v3.3
+# MassHunter sibling — EI Fragment Calculator v3.4
 
 This folder holds the **MassHunter-hosted** member of the EI Fragment
 Calculator family. It is not part of the `ei_fragment_calculator` Python
@@ -79,6 +79,46 @@ the ratio holds.
 > passed validation. **Any library written by v3.0 or earlier on a
 > non-English-locale workstation carries corrupted m/z and abundance values
 > and should be regenerated with v3.1.**
+
+## New in 3.4 — seven defects closed
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | **Only the first spectrum of a compound was converted.** `spec_map[cid]` collected every `<Spectrum>` node; both call sites then used `sp_nodes[0]` and dropped the rest silently. This is the normal shape of an accurate-mass library — one spectrum per collision energy or polarity — so the loss was large and invisible | Every spectrum is converted. The XML writer emits one `<Compound>` followed by one `<Spectrum>` per record, `SpectrumID` counting from 1. MSP and SDF get one record per spectrum (correct for both formats), name-suffixed `[2/3]` when a compound contributed several. The compound-level work — formula parse, MOL block, structural whitelist, RDKit fragment set — still happens once per compound |
+| 2 | **The write path had never been validated.** | `verify_output_xml()` re-reads the file just written and checks compound, spectrum and peak counts against what was intended, and that every base64 array pair decodes to equal non-zero lengths. A mismatch is reported loudly in the log. It is a genuine re-read, so it exercises the encoder, the XML escaping and the file write |
+| 3 | **A successful RDKit load proved nothing.** `clr.AddReferenceToFileAndPath()` only resolves the *managed* assembly; the ~106 native DLLs are reached by P/Invoke on first real use, so a load can succeed and every call still throw | `rdkit_self_test()` parses benzene and checks it has six atoms. It runs automatically after any successful load, and has its own **Self-test** button. If the assembly loads but RDKit does not work, the filter is left disabled rather than failing on first use |
+| 4 | **The isotope filter rejected good formulas on flat spectra.** It compares observed M+1/M+2 ratios against theory, which needs real intensity contrast; against a normalised or thresholded peak list the ratios are noise | `intensity_map_is_flat()` detects too little contrast (fewer than 3 distinct abundances, or max/min < 1.5) and the filter fails **open**, matching how the tool's other filters behave when their evidence is missing |
+| 5 | **13C satellites were assigned fragment formulas.** Peaks above M+1 were dropped, but satellites *inside* a spectrum went to the enumerator and got a formula of their own — chemically wrong, it is the same ion with a heavy carbon | Optional `is_c13_satellite()`, via a **Skip 13C satellites** checkbox (**off** by default, since it changes which peaks get formulas). Requires the peak below to be assigned and at least as abundant, and this peak's relative abundance not to exceed that formula's theoretical M+1 × 2.5. In accurate mode the spacing is also checked against the true 13C−12C difference (1.0033548 Da), which makes the call unambiguous |
+| 6 | **Option 3's candidate pre-filter was unmeasured.** | **Profiled, and the premise turned out to be wrong** — see below. Closed with data |
+| 7 | Minor: log box sized against a hardcoded 750 on an 810-px form; the accurate-mass window was an unreachable constant; settings were written in place | Log box sizes off `FORM_HEIGHT`; the window is configurable via `acc_window`; `save_config()` writes a temp file and moves it into place, so an interrupted write cannot leave a truncated settings file |
+
+### Defect 6 in detail — why the pre-filter is *not* worth doing
+
+Option 3 proposed applying cheap disqualifiers (RDB range, H/C ratio, zero-H)
+before full scoring. The paper said to measure `score_formula` first. Measured,
+per candidate:
+
+| Parent | m/z | Candidates | `score_formula` | `apply_all_filters` | ratio |
+|---|---|---|---|---|---|
+| `C9H11Cl3NO3PS` | 200 | 73 | 8.43 µs | 8.10 µs | 0.96× |
+| `C21H20Cl2O3` | 235 | 21 | 6.57 µs | 6.28 µs | 0.96× |
+| `C8H10N4O2` | 179 | 2 | 5.63 µs | 6.41 µs | 1.14× |
+| `C27H46O` | 255 | 7 | 5.58 µs | 5.77 µs | 1.04× |
+
+**Scoring and filtering cost the same.** Pre-filtering before scoring could
+therefore save at most half of half the per-candidate cost — ≲25% — and only
+by changing results, because those criteria are finite penalties, not floors.
+A candidate failing one can still legitimately win.
+
+There is a better route to the same end, already in place: **accurate mass**.
+The tolerance filter reduces a peak's candidate set to one in the cases
+measured (21→1, 16→1), and `pick_best_v3()` returns immediately for a single
+candidate — so scoring and filtering are skipped altogether. Tightening the
+tolerance beats pre-filtering, and does not change which formula wins.
+
+The safe parts of Option 3 were already implemented in 3.2: DBE computed once
+and shared between the two passes, and below-floor candidates dropped before
+the expensive pass whenever a possible candidate exists.
 
 ## New in 3.3 — accurate-mass spectra
 
@@ -189,7 +229,7 @@ This is the same trap this guide documents for the banner `?` button -- it
 applies to any right- or bottom-anchored control whose parent has not been
 sized yet.
 
-**Check the banner reads v3.3.** The filename does not carry the patch
+**Check the banner reads v3.4.** The filename does not carry the patch
 level; `APP_VERSION` and the banner do.
 
 ## Fixed in 3.1.1 -- dialog ownership

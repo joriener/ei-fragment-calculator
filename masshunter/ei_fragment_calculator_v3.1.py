@@ -95,6 +95,27 @@
 #             being rounded away. The preview reports the mass error of
 #             each assignment in ppm.
 #
+#   v3.4      Seven defects closed:
+#             1 every Spectrum of a compound is converted, not only the
+#               first; the XML writer emits one Compound with N Spectrum
+#               elements. MSP/SDF get one record per spectrum, suffixed
+#               [n/N] when a compound contributed several.
+#             2 the written library is re-read and its compound,
+#               spectrum and peak counts checked (verify_output_xml).
+#             3 RDKit is exercised for real after loading -- benzene is
+#               parsed and its atom count checked -- because a managed
+#               load says nothing about the 106 native P/Invokes.
+#             4 the isotope filter fails open on flat peak lists, where
+#               observed ratios are noise (intensity_map_is_flat).
+#             5 optional 13C-satellite detection, so a satellite is no
+#               longer assigned a fragment formula of its own.
+#             6 score_formula profiled: it costs the SAME as
+#               apply_all_filters (0.96-1.14x), so Option 3 pre-filter
+#               would save <=25%% at best and only by changing results.
+#               Closed with data; the safe parts were already in 3.2.
+#             7 log box sizes off FORM_HEIGHT; accurate-mass window is
+#               configurable; settings written atomically.
+#
 #   Style     Agilent WinForms Desktop App Style Guide: 56-px brand banner,
 #             version label, banner "?", About dialog with the verbatim
 #             disclaimer, embedded readme, embedded multi-resolution icon,
@@ -158,7 +179,7 @@ from System.Windows.Forms import (
 # =============================================================================
 # Style guide section 11 -- shown in the banner, title bar and MessageBoxes.
 APP_TITLE   = "EI Fragment Calculator"
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 APP_SLUG    = "ei_fragment_calculator"
 
 # Style guide section 2 -- canonical palette, built once and reused.
@@ -184,6 +205,7 @@ FONT_LABEL_B = Font("Segoe UI", 9.0, FontStyle.Bold)
 FONT_MONO    = Font("Consolas", 9.0)
 
 BANNER_HEIGHT = 56          # REQUIRED by the style guide -- never smaller
+FORM_HEIGHT   = 810         # main window height; log box sizes off this
 
 APP_ICON_MARK = "EF"        # white on #0085D5
 
@@ -611,6 +633,67 @@ def try_load_rdkit(dll_path=None, log_fn=None):
     return False, RDKIT_STATUS
 
 
+def rdkit_self_test():
+    """Actually call RDKit and check the answer (defect 3).
+
+    A successful clr.AddReferenceToFileAndPath() only proves the MANAGED
+    assembly resolved. The ~106 native boost/RDKit DLLs are reached by
+    P/Invoke on first real use, so a load can succeed and every call still
+    throw BadImageFormatException or DllNotFoundException -- which is exactly
+    what a wrong-architecture install produces.
+
+    Parses benzene and checks it has six heavy atoms.
+
+    Returns (ok, message).
+    """
+    if not RDKIT_LOADED or _RdkRWMol is None:
+        return False, "RDKit is not loaded"
+    try:
+        m = None
+        try:
+            m = _RdkRWMol.MolFromSmiles("c1ccccc1")
+        except:
+            m = None
+        if m is None:
+            # Fall back to the molblock path, which is what flt_rdkit uses.
+            block = ("benzene\n"
+                     "  self-test\n"
+                     "\n"
+                     "  6  6  0  0  0  0  0  0  0  0999 V2000\n"
+                     "    0.0000    0.0000    0.0000 C   0  0\n"
+                     "    1.4000    0.0000    0.0000 C   0  0\n"
+                     "    2.1000    1.2124    0.0000 C   0  0\n"
+                     "    1.4000    2.4249    0.0000 C   0  0\n"
+                     "    0.0000    2.4249    0.0000 C   0  0\n"
+                     "   -0.7000    1.2124    0.0000 C   0  0\n"
+                     "  1  2  2  0\n"
+                     "  2  3  1  0\n"
+                     "  3  4  2  0\n"
+                     "  4  5  1  0\n"
+                     "  5  6  2  0\n"
+                     "  6  1  1  0\n"
+                     "M  END\n")
+            m = _RdkRWMol.MolFromMolBlock(block, True, False)
+        if m is None:
+            return False, ("RDKit loaded but could not parse benzene -- the "
+                           "managed assembly works, the chemistry core does "
+                           "not. Usually a missing or wrong-architecture "
+                           "native set.")
+        n = m.getNumAtoms()
+        if int(n) != 6:
+            return False, ("RDKit parsed benzene but reported {0} atoms, "
+                           "expected 6".format(n))
+        return True, "RDKit self-test passed: benzene parsed, 6 atoms"
+    except Exception as ex:
+        try:
+            det = ex.ToString()
+        except:
+            det = str(ex)
+        return False, ("RDKit loaded but the first real call failed. That is "
+                       "the native-library failure, not a load failure:\n\n"
+                       + det)
+
+
 def _rdkit_latest_version(log_fn=None):
     """Ask nuget.org for the newest version. Falls back to the pinned one.
 
@@ -964,6 +1047,30 @@ def calc_m2_pct(comp, m1_pct):
     m2 += m1_pct * m1_pct / 200.0   # square correction for 13C accumulation
     return m2
 
+def intensity_map_is_flat(intensity_map, min_distinct=3,
+                          min_ratio=1.5):
+    """True when a peak list carries too little intensity contrast
+    for isotope ratios to mean anything (defect 4).
+
+    Flat if there are fewer than min_distinct distinct abundances,
+    or the largest is less than min_ratio times the smallest
+    positive one. Both catch the common cases: every peak set to
+    the same value, or a list already reduced to a narrow band.
+    """
+    if not intensity_map:
+        return True
+    vals = [v for v in intensity_map.values() if v > 0]
+    if not vals:
+        return True
+    if len(set(vals)) < min_distinct:
+        return True
+    lo = min(vals)
+    hi = max(vals)
+    if lo <= 0:
+        return False
+    return (hi / lo) < min_ratio
+
+
 def flt_isotope_score(comp, intensity_map, nom_mz, tol=30.0):
     """Score how well the candidate's theoretical M+1/M+2 pattern
     matches the observed spectrum intensities.
@@ -983,6 +1090,10 @@ def flt_isotope_score(comp, intensity_map, nom_mz, tol=30.0):
     if mono_obs <= 0.0:
         # No monoisotopic peak recorded -- skip scoring.
         return 0.0, "no mono peak"
+    if intensity_map_is_flat(intensity_map):
+        # Defect 4: no usable contrast, so observed ratios are
+        # noise. Fail open rather than reject on bad evidence.
+        return 0.0, "flat spectrum -- isotope scoring skipped"
     m1_theo = calc_m1_pct(comp)
     m2_theo = calc_m2_pct(comp, m1_theo)
     # Observed M+1 and M+2 as % of observed monoisotopic intensity.
@@ -2285,6 +2396,56 @@ def build_compound_context(parent, mol, filter_flags):
     return ctx
 
 
+C13_C12_DELTA = 1.0033548378   # 13C - 12C, CODATA
+
+
+def is_c13_satellite(t_nom, mz, ab, assigned, mass_mode="unit",
+                     mass_tol=0.0, factor=2.5):
+    """True when this peak looks like the 13C satellite of an
+    already-assigned peak one nominal mass below it (defect 5).
+
+    Peaks above M+1 are dropped elsewhere, but satellites INSIDE a
+    spectrum were previously handed to the enumerator and assigned
+    a fragment formula of their own, which is chemically wrong: the
+    peak is the same ion with a heavy carbon.
+
+    Two tests, both required:
+      * the peak below must be assigned and at least as abundant;
+      * this peak's abundance relative to it must not exceed the
+        theoretical M+1 percentage of that formula times 'factor'.
+        A real fragment at this mass is normally far more intense
+        than the isotope contribution it would have to hide under.
+
+    In accurate mode the spacing is checked against the true
+    13C-12C difference as well, which makes the call unambiguous.
+
+    'assigned' maps nominal m/z -> (formula, abundance, mz).
+    """
+    prev = assigned.get(t_nom - 1)
+    if not prev:
+        return False
+    p_form, p_ab, p_mz = prev
+    if p_ab <= 0 or ab <= 0 or ab > p_ab:
+        return False
+    if mass_mode in ("ppm", "mda") and mass_tol > 0 and mz and p_mz:
+        d = mz - p_mz
+        if mass_mode == "ppm":
+            lim = abs(mz) * mass_tol / 1.0e6
+        else:
+            lim = mass_tol / 1000.0
+        # Allow a little slack: two independent measurements.
+        if abs(d - C13_C12_DELTA) > max(lim * 2.0, 0.003):
+            return False
+    try:
+        m1_theo = calc_m1_pct(p_form)
+    except:
+        return False
+    if m1_theo <= 0:
+        return False
+    obs_pct = 100.0 * ab / p_ab
+    return obs_pct <= (m1_theo * factor)
+
+
 def find_subformulas_window(parent, center_nom, window,
                             parent_key=None, prep=None):
     """Union of find_subformulas_cached() over center_nom +/- window.
@@ -2504,7 +2665,8 @@ def sanitize_xml(text):
 
 def convert_library(xml_path, out_path, min_peaks, electron_mode,
                     log_fn, filter_flags, export_flags=None,
-                    mass_mode="unit", mass_tol=0.0):
+                    mass_mode="unit", mass_tol=0.0,
+                    skip_c13=False):
     """Convert a unit-mass MassHunter library to exact mass.
 
     For each compound:
@@ -2556,7 +2718,9 @@ def convert_library(xml_path, out_path, min_peaks, electron_mode,
     out_compounds = []
     skipped_nf    = 0    # skipped: no/bad formula
     skipped_fp    = 0    # skipped: too few peaks
-    total         = 0
+    total         = 0    # compounds with >=1 spectrum
+    n_spectra     = 0    # spectra written (defect 1)
+    n_c13         = 0    # 13C satellites skipped (defect 5)
     used_struct   = 0    # compounds that had a MOL block
 
     for ci in range(c_count):
@@ -2623,82 +2787,102 @@ def convert_library(xml_path, out_path, min_peaks, electron_mode,
         if not sp_nodes:
             log_fn("[SKIP] {0}: no spectrum".format(name))
             continue
-        sp      = sp_nodes[0]
-        mz_vals = decode_doubles(xtext(sp, ["MzValues"]))
-        ab_vals = decode_doubles(xtext(sp, ["AbundanceValues"]))
-        if len(mz_vals) == 0 or len(mz_vals) != len(ab_vals):
-            log_fn("[SKIP] {0}: bad spectrum".format(name))
-            continue
-
-        # Build intensity map for isotope scoring: {nom_mz: max_abundance}.
-        intensity_map = {}
-        for pi in range(len(mz_vals)):
-            nom = int(round(mz_vals[pi]))
-            ab  = ab_vals[pi]
-            if nom not in intensity_map or ab > intensity_map[nom]:
-                intensity_map[nom] = ab
-
-        new_mz   = []
-        new_ab   = []
-        new_form = []
-        ambig    = 0
-
-        for pi in range(len(mz_vals)):
-            mz    = mz_vals[pi]
-            ab    = ab_vals[pi]
-            t_nom = int(round(mz))
-            # Single shared pipeline -- see assign_peak() (Option 6).
-            # mz is passed whole: in accurate mode its decimals are
-            # what select the formula.
-            best, exact, n_valid, m_err = assign_peak(
-                parent, t_nom, ctx, intensity_map,
-                filter_flags, electron_mode, mz, mass_mode, mass_tol)
-            if best is None:
+        # One record per SPECTRUM (defect 1). Everything above this
+        # point is per-compound and stays outside the loop, so the
+        # MOL parse, structural whitelist and RDKit fragment set are
+        # still built only once per compound.
+        _had_any = [False]
+        for _si, sp in enumerate(sp_nodes):
+            mz_vals = decode_doubles(xtext(sp, ["MzValues"]))
+            ab_vals = decode_doubles(xtext(sp, ["AbundanceValues"]))
+            if len(mz_vals) == 0 or len(mz_vals) != len(ab_vals):
+                log_fn("[SKIP] {0}: bad spectrum".format(name))
                 continue
-            if n_valid > 1:
-                ambig += 1
-            new_mz.append(exact)
-            new_ab.append(ab)
-            new_form.append(formula_str(best))
 
-        if len(new_mz) < min_peaks:
-            skipped_fp += 1
-            log_fn("[SKIP] {0}: {1} peaks (need {2})".format(
-                name, len(new_mz), min_peaks))
-            continue
+            # Build intensity map for isotope scoring: {nom_mz: max_abundance}.
+            intensity_map = {}
+            for pi in range(len(mz_vals)):
+                nom = int(round(mz_vals[pi]))
+                ab  = ab_vals[pi]
+                if nom not in intensity_map or ab > intensity_map[nom]:
+                    intensity_map[nom] = ab
 
-        # Sort peaks by ascending exact m/z (required by MassHunter).
-        combined = sorted(
-            zip(new_mz, new_ab, new_form), key=lambda x: x[0])
-        new_mz   = [x[0] for x in combined]
-        new_ab   = [x[1] for x in combined]
-        new_form = [x[2] for x in combined]
+            new_mz   = []
+            new_ab   = []
+            new_form = []
+            ambig    = 0
+            _assigned = {}   # nom -> (formula, ab, mz), defect 5
 
-        # Normalise abundances to [0, 9999] (MassHunter internal scale).
-        max_ab = max(new_ab) if new_ab else 1.0
-        if max_ab <= 0:
-            max_ab = 1.0
-        norm_ab = [(a / max_ab) * 9999.0 for a in new_ab]
+            for pi in range(len(mz_vals)):
+                mz    = mz_vals[pi]
+                ab    = ab_vals[pi]
+                t_nom = int(round(mz))
+                if (skip_c13 and is_c13_satellite(
+                        t_nom, mz, ab, _assigned, mass_mode, mass_tol)):
+                    n_c13 += 1
+                    continue
+                # Single shared pipeline -- see assign_peak() (Option 6).
+                # mz is passed whole: in accurate mode its decimals are
+                # what select the formula.
+                best, exact, n_valid, m_err = assign_peak(
+                    parent, t_nom, ctx, intensity_map,
+                    filter_flags, electron_mode, mz, mass_mode, mass_tol)
+                if best is None:
+                    continue
+                if n_valid > 1:
+                    ambig += 1
+                _assigned[t_nom] = (best, ab, mz)
+                new_mz.append(exact)
+                new_ab.append(ab)
+                new_form.append(formula_str(best))
 
-        # Find the base peak index (highest normalised abundance).
-        bp_idx = 0
-        for i in range(len(norm_ab)):
-            if norm_ab[i] >= norm_ab[bp_idx]:
-                bp_idx = i
+            if len(new_mz) < min_peaks:
+                skipped_fp += 1
+                log_fn("[SKIP] {0}: {1} peaks (need {2})".format(
+                    name, len(new_mz), min_peaks))
+                continue
 
-        ambi_str   = " ({0} ambig)".format(ambig) if ambig > 0 else ""
-        struct_str = " [+struct]" if struct_wl else ""
-        log_fn("[OK] {0}: {1}/{2} peaks{3}{4}".format(
-            name, len(new_mz), len(mz_vals), ambi_str, struct_str))
+            # Sort peaks by ascending exact m/z (required by MassHunter).
+            combined = sorted(
+                zip(new_mz, new_ab, new_form), key=lambda x: x[0])
+            new_mz   = [x[0] for x in combined]
+            new_ab   = [x[1] for x in combined]
+            new_form = [x[2] for x in combined]
 
-        out_compounds.append({
-            "Name": name, "CAS": cas, "Formula": formula_s,
-            "MW": mw, "RT": rt, "RI": ri, "BP": bp, "MP": mp,
-            "MolFile": mol, "Desc": desc,
-            "mz": new_mz, "ab": norm_ab,
-            "formulas": new_form, "bp_idx": bp_idx,
-        })
-        total += 1
+            # Normalise abundances to [0, 9999] (MassHunter internal scale).
+            max_ab = max(new_ab) if new_ab else 1.0
+            if max_ab <= 0:
+                max_ab = 1.0
+            norm_ab = [(a / max_ab) * 9999.0 for a in new_ab]
+
+            # Find the base peak index (highest normalised abundance).
+            bp_idx = 0
+            for i in range(len(norm_ab)):
+                if norm_ab[i] >= norm_ab[bp_idx]:
+                    bp_idx = i
+
+            ambi_str   = " ({0} ambig)".format(ambig) if ambig > 0 else ""
+            struct_str = " [+struct]" if struct_wl else ""
+            log_fn("[OK] {0}: {1}/{2} peaks{3}{4}".format(
+                name, len(new_mz), len(mz_vals), ambi_str, struct_str))
+
+            out_compounds.append({
+                "Name": name, "CAS": cas, "Formula": formula_s,
+                "MW": mw, "RT": rt, "RI": ri, "BP": bp, "MP": mp,
+                "MolFile": mol, "Desc": desc,
+                "mz": new_mz, "ab": norm_ab,
+                "formulas": new_form, "bp_idx": bp_idx,
+            })
+            _had_any[0] = True
+            _out_last = out_compounds[-1]
+            _out_last['SpecIndex'] = _si
+            _out_last['SpecTotal'] = len(sp_nodes)
+            _out_last['CidKey']    = cid
+            n_spectra += 1
+
+        # One compound, however many spectra it contributed.
+        if _had_any[0]:
+            total += 1
         if ((ci + 1) % 25) == 0:
             log_fn("[INFO] Processed {0}/{1}...".format(ci + 1, c_count))
 
@@ -2707,7 +2891,10 @@ def convert_library(xml_path, out_path, min_peaks, electron_mode,
     # ------------------------------------------------------------------
     log_fn("")
     log_fn("[INFO] Summary:")
-    log_fn("  Converted:             {0}".format(total))
+    log_fn("  Compounds converted:   {0}".format(total))
+    log_fn("  Spectra converted:     {0}".format(n_spectra))
+    if skip_c13:
+        log_fn("  13C satellites skipped: {0}".format(n_c13))
     log_fn("  With structural rules: {0}".format(used_struct))
     log_fn("  Skipped (formula):     {0}".format(skipped_nf))
     log_fn("  Skipped (peaks):       {0}".format(skipped_fp))
@@ -2735,49 +2922,63 @@ def convert_library(xml_path, out_path, min_peaks, electron_mode,
         '    <LastEditDateTime>{0}</LastEditDateTime>'.format(now))
     sb.AppendLine('  </Library>')
 
+    # Records are in compound order, so consecutive entries sharing a
+    # CidKey belong to one compound: emit <Compound> once, then one
+    # <Spectrum> per record with SpectrumID counting from 1 (defect 1).
+    _prev_key = object()
+    cid       = 0
+    _spec_no  = 0
     for idx, c in enumerate(out_compounds):
-        cid = idx + 1
         mz  = c["mz"]
         ab  = c["ab"]
         bpi = c["bp_idx"]
+        _key = c.get("CidKey", idx)
+        _new_compound = (_key != _prev_key)
+        if _new_compound:
+            _prev_key = _key
+            cid      += 1
+            _spec_no  = 0
+        _spec_no += 1
 
-        sb.AppendLine('  <Compound>')
-        sb.AppendLine('    <LibraryID>1</LibraryID>')
-        sb.AppendLine('    <CompoundID>{0}</CompoundID>'.format(cid))
-        sb.AppendLine('    <BoilingPoint>{0}</BoilingPoint>'.format(
-            c.get("BP", "-300")))
-        if c.get("CAS"):
-            sb.AppendLine('    <CASNumber>{0}</CASNumber>'.format(
-                xml_esc(c["CAS"])))
-        sb.AppendLine('    <CompoundName>{0}</CompoundName>'.format(
-            xml_esc(c["Name"])))
-        if c.get("Formula"):
-            sb.AppendLine('    <Formula>{0}</Formula>'.format(
-                xml_esc(c["Formula"])))
-        sb.AppendLine(
-            '    <LastEditDateTime>{0}</LastEditDateTime>'.format(now))
-        sb.AppendLine('    <MeltingPoint>{0}</MeltingPoint>'.format(
-            c.get("MP", "-300")))
-        if c.get("MW"):
+        if _new_compound:
+            sb.AppendLine('  <Compound>')
+            sb.AppendLine('    <LibraryID>1</LibraryID>')
+            sb.AppendLine('    <CompoundID>{0}</CompoundID>'.format(cid))
+            sb.AppendLine('    <BoilingPoint>{0}</BoilingPoint>'.format(
+                c.get("BP", "-300")))
+            if c.get("CAS"):
+                sb.AppendLine('    <CASNumber>{0}</CASNumber>'.format(
+                    xml_esc(c["CAS"])))
+            sb.AppendLine('    <CompoundName>{0}</CompoundName>'.format(
+                xml_esc(c["Name"])))
+            if c.get("Formula"):
+                sb.AppendLine('    <Formula>{0}</Formula>'.format(
+                    xml_esc(c["Formula"])))
             sb.AppendLine(
-                '    <MolecularWeight>{0}</MolecularWeight>'.format(c["MW"]))
-        if c.get("MolFile"):
-            sb.AppendLine('    <MolFile>{0}</MolFile>'.format(
-                xml_esc(c["MolFile"])))
-        if c.get("RI"):
-            sb.AppendLine(
-                '    <RetentionIndex>{0}</RetentionIndex>'.format(c["RI"]))
-        if c.get("RT"):
-            sb.AppendLine(
-                '    <RetentionTimeRTL>{0}</RetentionTimeRTL>'.format(c["RT"]))
-        sb.AppendLine('  </Compound>')
+                '    <LastEditDateTime>{0}</LastEditDateTime>'.format(now))
+            sb.AppendLine('    <MeltingPoint>{0}</MeltingPoint>'.format(
+                c.get("MP", "-300")))
+            if c.get("MW"):
+                sb.AppendLine(
+                    '    <MolecularWeight>{0}</MolecularWeight>'.format(c["MW"]))
+            if c.get("MolFile"):
+                sb.AppendLine('    <MolFile>{0}</MolFile>'.format(
+                    xml_esc(c["MolFile"])))
+            if c.get("RI"):
+                sb.AppendLine(
+                    '    <RetentionIndex>{0}</RetentionIndex>'.format(c["RI"]))
+            if c.get("RT"):
+                sb.AppendLine(
+                    '    <RetentionTimeRTL>{0}</RetentionTimeRTL>'.format(c["RT"]))
+            sb.AppendLine('  </Compound>')
 
         mz_b64 = encode_doubles(mz)
         ab_b64 = encode_doubles(ab)
         sb.AppendLine('  <Spectrum>')
         sb.AppendLine('    <LibraryID>1</LibraryID>')
         sb.AppendLine('    <CompoundID>{0}</CompoundID>'.format(cid))
-        sb.AppendLine('    <SpectrumID>1</SpectrumID>')
+        sb.AppendLine('    <SpectrumID>{0}</SpectrumID>'.format(
+            _spec_no))
         sb.AppendLine(
             '    <AbundanceValues>{0}</AbundanceValues>'.format(ab_b64))
         sb.AppendLine('    <BasePeakAbundance>9999</BasePeakAbundance>')
@@ -2808,6 +3009,14 @@ def convert_library(xml_path, out_path, min_peaks, electron_mode,
     if export_flags is None or export_flags.get('xml', True):
         log_fn("[INFO] Writing XML: " + out_path)
         File.WriteAllText(out_path, sb.ToString(), Encoding.UTF8)
+
+        # Defect 2: prove the file just written is structurally sound.
+        try:
+            _exp_peaks = sum(len(c["mz"]) for c in out_compounds)
+            verify_output_xml(out_path, total, n_spectra, _exp_peaks,
+                              log_fn)
+        except Exception as _vex:
+            log_fn("[VERIFY] the check itself failed: " + str(_vex))
         log_fn("[INFO] XML done.  {0} compounds.".format(total))
 
     # Write MSP (optional).
@@ -2823,6 +3032,69 @@ def convert_library(xml_path, out_path, min_peaks, electron_mode,
 # ==================================================================
 # SECTION 12b: Optional export format writers
 # ==================================================================
+
+def _spec_suffix(c):
+    """' [2/3]' when a compound contributed several spectra, so MSP
+    and SDF records stay distinguishable. Empty for the common
+    single-spectrum case, which keeps existing output unchanged."""
+    n = c.get('SpecTotal', 1)
+    if not n or n < 2:
+        return ''
+    return ' [{0}/{1}]'.format(c.get('SpecIndex', 0) + 1, n)
+
+
+def verify_output_xml(out_path, exp_compounds, exp_spectra,
+                      exp_peaks, log_fn):
+    """Re-read a written MassHunter library and check it against
+    what was meant to be written (defect 2).
+
+    Compares compound count, spectrum count and total peak count,
+    and confirms every spectrum's base64 arrays decode to equal,
+    non-zero lengths. Returns True when everything matches.
+
+    Deliberately a re-read rather than an in-memory check: it
+    exercises the encoder, the XML escaping and the file write --
+    exactly the path that had never been validated.
+    """
+    try:
+        raw = File.ReadAllText(out_path, Encoding.UTF8)
+        doc = XmlDocument()
+        doc.LoadXml(sanitize_xml(raw))
+    except Exception as ex:
+        log_fn("[VERIFY] could not re-read the output: " + str(ex))
+        return False
+
+    got_c = len(xnodes(doc, "Compound"))
+    specs = xnodes(doc, "Spectrum")
+    got_s = len(specs)
+    got_p = 0
+    bad   = 0
+    for sp in specs:
+        mz = decode_doubles(xtext(sp, ["MzValues"]))
+        ab = decode_doubles(xtext(sp, ["AbundanceValues"]))
+        if len(mz) != len(ab) or not mz:
+            bad += 1
+        got_p += len(mz)
+
+    ok = (got_c == exp_compounds and got_s == exp_spectra
+          and got_p == exp_peaks and bad == 0)
+    log_fn("")
+    log_fn("[VERIFY] re-read {0}".format(out_path))
+    log_fn("  compounds {0} (expected {1}){2}".format(
+        got_c, exp_compounds,
+        "" if got_c == exp_compounds else "   <-- MISMATCH"))
+    log_fn("  spectra   {0} (expected {1}){2}".format(
+        got_s, exp_spectra,
+        "" if got_s == exp_spectra else "   <-- MISMATCH"))
+    log_fn("  peaks     {0} (expected {1}){2}".format(
+        got_p, exp_peaks,
+        "" if got_p == exp_peaks else "   <-- MISMATCH"))
+    if bad:
+        log_fn("  {0} spectrum/spectra with empty or mismatched "
+               "arrays   <-- MISMATCH".format(bad))
+    log_fn("  result: {0}".format("OK" if ok else "PROBLEM"))
+    return ok
+
 
 def write_msp(out_path, compounds, log_fn):
     """Write compounds to NIST MSP format.
@@ -2847,7 +3119,7 @@ def write_msp(out_path, compounds, log_fn):
     log_fn("[INFO] Writing MSP: " + out_path)
     sb = StringBuilder()
     for c in compounds:
-        name = c.get("Name") or ""
+        name = (c.get("Name") or "") + _spec_suffix(c)
         sb.AppendLine("Name: " + name)
         if c.get("Formula"):
             sb.AppendLine("Formula: " + c["Formula"])
@@ -3008,12 +3280,27 @@ def load_config():
     return defaults
 
 def save_config(cfg):
-    """Persist settings dict to the settings file."""
+    """Persist settings dict to the settings file.
+
+    Written to a temp file and moved into place (defect 7), so an
+    interrupted write or a second instance cannot leave a
+    half-written settings file behind.
+    """
     try:
         lines = ["{0}={1}".format(k, v) for k, v in cfg.items()]
-        File.WriteAllLines(cfg_path, lines)
+        tmp = cfg_path + ".tmp"
+        File.WriteAllLines(tmp, lines)
+        try:
+            if File.Exists(cfg_path):
+                File.Delete(cfg_path)
+        except:
+            pass
+        File.Move(tmp, cfg_path)
     except:
-        pass
+        try:
+            File.WriteAllLines(cfg_path, lines)
+        except:
+            pass
 
 cfg      = load_config()
 last_dir = [cfg.get('last_dir', "C:\\")]
@@ -3025,6 +3312,15 @@ last_dir = [cfg.get('last_dir', "C:\\")]
 # ---------------------------------------------------------------------------
 try:
     try_load_rdkit(cfg.get('rdkit_path', None))
+except:
+    pass
+
+# Defect 7: let the accurate-mass search window be tuned without
+# editing the source. Only worth raising for very high mass.
+try:
+    _w = int(cfg.get('acc_window', str(ACCURATE_NOMINAL_WINDOW)))
+    if 0 <= _w <= 5:
+        ACCURATE_NOMINAL_WINDOW = _w
 except:
     pass
 
@@ -3495,8 +3791,24 @@ def show_rdkit_setup(owner_form, on_state_change=None):
         except:
             pass
 
+    def run_self_test():
+        """Defect 3: a successful load is not proof. Call RDKit for real."""
+        ok, msg = rdkit_self_test()
+        log("")
+        log(("[SELF-TEST OK] " if ok else "[SELF-TEST FAILED] ") + str(msg))
+        return ok
+
     def finish(ok):
         refresh_status()
+        if ok:
+            if not run_self_test():
+                log("")
+                log("The assembly loaded but RDKit does not work, so the")
+                log("filter stays disabled -- enabling it would fail on")
+                log("first use.")
+                globals()['RDKIT_LOADED'] = False
+                refresh_status()
+                return
         if ok and on_state_change:
             try:
                 on_state_change()
@@ -3564,6 +3876,15 @@ def show_rdkit_setup(owner_form, on_state_change=None):
     btn_page.Click   += on_page
     btn_browse.Click += on_browse
     btn_load.Click   += on_load
+    btn_test = Button()
+    btn_test.Text     = "Self-test"
+    btn_test.Location = Point(508, y + 158)
+    btn_test.Size     = Size(104, 27)
+    btn_test.Anchor   = (AnchorStyles.Bottom | AnchorStyles.Right)
+    style_button(btn_test, primary=False)
+    body.Controls.Add(btn_test)
+    btn_test.Click   += lambda s, e: run_self_test()
+
     btn_close.Click  += lambda s, e: dlg.Close()
 
     dlg.Controls.Add(hdr)
@@ -3776,6 +4097,8 @@ def _Run():
         rdkit_label  = ("RDKit (bond-break check)" if RDKIT_LOADED
                         else "RDKit -- use 'RDKit...' in the banner")
         chk_rdkit    = _mk_chk(rdkit_label, 380, 48, 'flt_rdkit', False)
+        chk_c13      = _mk_chk("Skip 13C satellites", 620, 48,
+                               'skip_c13', False)
         if not RDKIT_LOADED:
             chk_rdkit.Enabled = False   # greyed out until DLL is present
             chk_rdkit.Checked = False
@@ -3828,7 +4151,7 @@ def _Run():
         y += 40
         txt_log = TextBox(
             Location=Point(10, y),
-            Size=Size(930, 750 - y - 40),
+            Size=Size(930, FORM_HEIGHT - y - 100),
             Font=mono_font, Multiline=True,
             ScrollBars=ScrollBars.Both, ReadOnly=True,
             Anchor=(AnchorStyles.Top | AnchorStyles.Bottom |
@@ -3881,6 +4204,9 @@ def _Run():
             elif idx == 2:
                 return "none"
             return "remove"
+
+        def get_skip_c13():
+            return bool(chk_c13.Checked)
 
         def get_mass_settings():
             """Return (mass_mode, tolerance). Tolerance is 0 in unit
@@ -3938,6 +4264,7 @@ def _Run():
                 'export_sdf':    "1" if chk_sdf.Checked else "0",
                 'mass_mode':     _mm,
                 'mass_tol':      str(_mt),
+                'skip_c13':      "1" if chk_c13.Checked else "0",
             })
             save_config(_merged)
 
@@ -4090,6 +4417,9 @@ def _Run():
                     assigned = 0
                     ambig    = 0
                     dropped  = 0
+                    _p_assigned = {}   # nom -> (formula, ab, mz), defect 5
+                    _p_c13      = 0
+                    _p_skip_c13 = get_skip_c13()
 
                     log("")
                     log("--- {0} ({1})  MW={2:.4f}  M+.={3}{4} ---".format(
@@ -4103,6 +4433,11 @@ def _Run():
                             dropped += 1
                             continue
 
+                        if (_p_skip_c13 and is_c13_satellite(
+                                t_nom, mz, ab, _p_assigned, mass_mode, mass_tol)):
+                            _p_c13  += 1
+                            dropped += 1
+                            continue
                         best, exact, n_valid, m_err = assign_peak(
                             parent, t_nom, pctx, imap, flt_flgs, emode,
                             mz, mass_mode, mass_tol)
@@ -4137,6 +4472,7 @@ def _Run():
                                    or mass_mode == "unit"
                                    else "  {0:+.2f} ppm".format(m_err))
 
+                        _p_assigned[t_nom] = (best, ab, mz)
                         assigned += 1
                         log("  {0:>4} {1:>5.1f}%  {2:>12.6f}  {3:<12} "
                             "{4}  -{5}{6}{7}{8}".format(
@@ -4146,8 +4482,10 @@ def _Run():
 
                     status = "OK" if assigned >= min_pk else "SKIP"
                     log("  [{0}] {1}/{2} assigned,  {3} dropped,  "
-                        "{4} ambiguous".format(
-                        status, assigned, len(mz_vals), dropped, ambig))
+                        "{4} ambiguous{5}".format(
+                        status, assigned, len(mz_vals), dropped, ambig,
+                        ("  ({0} 13C)".format(_p_c13)
+                         if _p_c13 else "")))
 
             except Exception as e:
                 log("[ERROR] " + str(e))
@@ -4187,7 +4525,7 @@ def _Run():
                 mass_mode, mass_tol = get_mass_settings()
                 n = convert_library(
                     in_path, out_path, min_pk, emode, log, flt_flgs,
-                    exp_flgs, mass_mode, mass_tol)
+                    exp_flgs, mass_mode, mass_tol, get_skip_c13())
                 if n > 0:
                     # Build a list of output files for the completion dialog.
                     _base = out_path
