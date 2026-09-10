@@ -80,6 +80,19 @@ the ratio holds.
 > non-English-locale workstation carries corrupted m/z and abundance values
 > and should be regenerated with v3.1.**
 
+## Fixed in 3.1.1 -- Browse works
+
+In 3.1, and in v3.0 before it, the **Input XML** and **Output Path** Browse
+buttons appeared to do nothing, and some message boxes never appeared. Both
+file dialogs and all four MessageBoxes were owned by the *MassHunter main
+form*, but the tool's own form is shown modal over that form -- so a child
+window owned by it was pushed **behind** the tool and could not be reached.
+
+All six dialog sites are now owned by the tool's own form, which is the
+topmost modal window. This is the same correction `EXIMPORT_SDFMSP` v2.2
+applied for its MessageBoxes. The banner shows **v3.1.1** once you have the
+fixed build.
+
 ## Installation
 
 ```powershell
@@ -101,10 +114,14 @@ tables, …) compare equal. Enumeration output was verified identical over
 36,506 candidates, and a static name-resolution pass confirms no function lost
 a binding when it left the enclosing scope.
 
-**The script has not been executed inside a MassHunter Library Editor
-session, and the WinForms layout is visually unchecked.** Run **Preview** on a
-small library and compare its assignments against a v3.0 preview of the same
-file before trusting a conversion.
+**Partially exercised in a live session.** 3.1 was launched in a real
+MassHunter Library Editor session, which is how the dialog-ownership defect
+above was found and fixed in 3.1.1. A full conversion has **not** yet been
+validated against a real library, and the WinForms layout beyond the file
+pickers is still visually unchecked.
+
+Run **Preview** on a small library and compare its assignments against a v3.0
+preview of the same file before trusting a conversion.
 
 ## Licence
 

@@ -1,13 +1,22 @@
-# EI Fragment Calculator — v3.1
+# EI Fragment Calculator — v3.1.1
 
 | | |
 |---|---|
 | **Platform** | MassHunter Library Editor — IronPython 2.7.5, .NET-only, with a WinForms UI |
-| **File** | `ei_fragment_calculator_v3.1.py` |
+| **File** | `ei_fragment_calculator_v3.1.py` (`APP_VERSION = "3.1.1"`) |
 | **Repo path** | `masshunter/ei_fragment_calculator_v3.1.py` |
 | **Install folder** | `<MassHunter>\Scripts\LibraryEdit\` |
 | **Settings file** | `%AppData%\exactmass_libconv\settings.txt` |
-| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` |
+| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` → `v3.1.1` |
+
+> **Fixed in 3.1.1 — Browse now works.** In 3.1 and in **v3.0 before it**, the
+> Input XML and Output Path **Browse** buttons appeared to do nothing, and
+> some message boxes never appeared. Both file dialogs and all four
+> MessageBoxes were owned by the *MassHunter main form*, but the tool's own
+> form is shown modal over that form — so a child window owned by it was
+> pushed **behind** the tool and could not be reached. All six dialog sites
+> are now owned by the tool's own form. The banner shows **v3.1.1** once you
+> have the fixed build.
 
 > `<MassHunter>` in the paths below stands for your MassHunter installation
 > root -- often on the `D:` drive, sometimes `C:`. Substitute the real path

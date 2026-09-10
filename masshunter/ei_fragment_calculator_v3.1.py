@@ -61,6 +61,13 @@
 #             by hand. Both now call one implementation, so the preview
 #             cannot drift from what the conversion writes.
 #
+#   v3.1.1    Browse and the MessageBoxes were owned by the MassHunter
+#             MAIN form. The tool's own form is shown modal over that
+#             form, so any child owned by it opens BEHIND the tool and
+#             cannot be reached -- Browse appeared to do nothing. All six
+#             dialog sites are now owned by the tool's own form. This
+#             defect was inherited unchanged from v3.0.
+#
 #   Style     Agilent WinForms Desktop App Style Guide: 56-px brand banner,
 #             version label, banner "?", About dialog with the verbatim
 #             disclaimer, embedded readme, embedded multi-resolution icon,
@@ -124,7 +131,7 @@ from System.Windows.Forms import (
 # =============================================================================
 # Style guide section 11 -- shown in the banner, title bar and MessageBoxes.
 APP_TITLE   = "EI Fragment Calculator"
-APP_VERSION = "3.1"
+APP_VERSION = "3.1.1"
 APP_SLUG    = "ei_fragment_calculator"
 
 # Style guide section 2 -- canonical palette, built once and reused.
@@ -3104,7 +3111,10 @@ def _Run():
                           "|XML (*.xml)|*.xml|All (*.*)|*.*")
             if Directory.Exists(last_dir[0]):
                 dlg.InitialDirectory = last_dir[0]
-            res = dlg.ShowDialog(owner) if owner else dlg.ShowDialog()
+            # Own the dialog by OUR form, not the MassHunter main form:
+            # our form is modal over that one, so a child owned by it
+            # would open behind us and be unreachable.
+            res = dlg.ShowDialog(form)
             if res != DialogResult.OK:
                 return
             txt_in.Text  = dlg.FileName
@@ -3128,7 +3138,10 @@ def _Run():
             dlg.DefaultExt = "mslibrary.xml"
             if Directory.Exists(last_dir[0]):
                 dlg.InitialDirectory = last_dir[0]
-            res = dlg.ShowDialog(owner) if owner else dlg.ShowDialog()
+            # Own the dialog by OUR form, not the MassHunter main form:
+            # our form is modal over that one, so a child owned by it
+            # would open behind us and be unreachable.
+            res = dlg.ShowDialog(form)
             if res != DialogResult.OK:
                 return
             txt_out.Text = dlg.FileName
@@ -3150,7 +3163,7 @@ def _Run():
             in_path = txt_in.Text.strip()
             if not in_path or not File.Exists(in_path):
                 MessageBox.Show(
-                    owner if owner else form,
+                    form,
                     "Select an input file.", "Missing Input",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 return
@@ -3307,13 +3320,13 @@ def _Run():
             out_path = txt_out.Text.strip()
             if not in_path or not File.Exists(in_path):
                 MessageBox.Show(
-                    owner if owner else form,
+                    form,
                     "Select an input file.", "Missing Input",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 return
             if not out_path:
                 MessageBox.Show(
-                    owner if owner else form,
+                    form,
                     "Select an output file.", "Missing Output",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 return
@@ -3344,7 +3357,7 @@ def _Run():
                         out_files.append("SDF:  " + _base + '.sdf')
                     files_str = "\n".join(out_files) if out_files else out_path
                     MessageBox.Show(
-                        owner if owner else form,
+                        form,
                         ("Conversion complete!\n\n"
                          "Compounds: {0}\n"
                          "Electron mode: {1}\n\n"
