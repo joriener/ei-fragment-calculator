@@ -1,22 +1,45 @@
-# EI Fragment Calculator — v3.1.1
+# EI Fragment Calculator — v3.1.2
 
 | | |
 |---|---|
 | **Platform** | MassHunter Library Editor — IronPython 2.7.5, .NET-only, with a WinForms UI |
-| **File** | `ei_fragment_calculator_v3.1.py` (`APP_VERSION = "3.1.1"`) |
+| **File** | `ei_fragment_calculator_v3.1.py` (`APP_VERSION = "3.1.2"`) |
 | **Repo path** | `masshunter/ei_fragment_calculator_v3.1.py` |
 | **Install folder** | `<MassHunter>\Scripts\LibraryEdit\` |
 | **Settings file** | `%AppData%\exactmass_libconv\settings.txt` |
-| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` → `v3.1.1` |
+| **Lineage** | `UnitMass_to_ExactMass_v1.2` (Luca Godina) → `v3.0` (Joerg Riener) → `v3.1` → `v3.1.1` → `v3.1.2` |
 
-> **Fixed in 3.1.1 — Browse now works.** In 3.1 and in **v3.0 before it**, the
-> Input XML and Output Path **Browse** buttons appeared to do nothing, and
-> some message boxes never appeared. Both file dialogs and all four
-> MessageBoxes were owned by the *MassHunter main form*, but the tool's own
-> form is shown modal over that form — so a child window owned by it was
-> pushed **behind** the tool and could not be reached. All six dialog sites
-> are now owned by the tool's own form. The banner shows **v3.1.1** once you
-> have the fixed build.
+> **The filename does not carry the patch level.** The file stays
+> `ei_fragment_calculator_v3.1.py`; the build is identified by `APP_VERSION`
+> in the source and by the version shown in the banner. **Check the banner
+> reads v3.1.2** — if it reads v3.1 or v3.1.1 you are running an older copy.
+
+### Fixed in 3.1.2 — the Browse buttons were off-screen
+
+This is the defect behind "there is no Browse button". In 3.1 and 3.1.1 the
+**Input XML** and **Output Path** rows, their **Browse** buttons, the filter
+group and the log were all positioned off the right edge of the window.
+
+v3.1 introduced a `content` panel to sit below the new 56-px banner, but
+populated it **before** adding it to the form. WinForms fixes a control's
+`Anchor` offset at the moment it is added, from its parent's *current* size —
+and a `Panel` not yet on a form is still the default **200 px** wide. A Browse
+button at `x=850` with `Anchor = Top | Right` therefore recorded a right
+margin of `200 − (850+88) = −738 px`, and when the panel later filled to
+~944 px that margin flung it to roughly `x = 1682`. The panel is now docked to
+the form before any child is added, so the margin is a correct `+6 px`.
+
+This is the same trap the style guide documents for the banner `?` button
+(§6) — it applies to *any* right- or bottom-anchored control added to a parent
+that has not been sized yet.
+
+### Fixed in 3.1.1 — dialog ownership
+
+Both file dialogs and all four MessageBoxes were owned by the *MassHunter main
+form*, but the tool's own form is shown modal over that form — so a child
+window owned by it was pushed **behind** the tool and could not be reached.
+All six dialog sites are now owned by the tool's own form. **This defect was
+inherited unchanged from v3.0.**
 
 > `<MassHunter>` in the paths below stands for your MassHunter installation
 > root -- often on the `D:` drive, sometimes `C:`. Substitute the real path
@@ -289,9 +312,11 @@ criteria are preserved byte-for-byte.
 | Syntax | `ast.parse` clean |
 | Live `Double.Parse` calls | **0** (the three remaining mentions are comments describing the bug that was fixed) |
 
-**Not verified:** the script has not been executed inside a MassHunter Library
-Editor session, and the WinForms layout (banner geometry, About dialog,
-content-panel offset) is unchecked visually. Run **Preview** on a small
+**Partially exercised in a live session.** 3.1 was launched in a real
+MassHunter Library Editor session -- that is how the dialog-ownership defect
+fixed in 3.1.1 was found. Still not validated: a full conversion against a
+real library, and the WinForms layout beyond the file pickers (banner
+geometry, About dialog, content-panel offset). Run **Preview** on a small
 library first and compare its assignments against a v3.0 preview of the same
 file before trusting a conversion.
 

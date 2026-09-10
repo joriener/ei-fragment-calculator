@@ -68,6 +68,14 @@
 #             dialog sites are now owned by the tool's own form. This
 #             defect was inherited unchanged from v3.0.
 #
+#   v3.1.2    Browse buttons and the two path text boxes were off-screen.
+#             The v3.1 content Panel was populated BEFORE it was added to
+#             the form, so it was still the default 200 px wide and every
+#             Right-anchored control recorded a negative right margin --
+#             x=850 anchored Top|Right ended up near x=1682. The panel is
+#             now docked to the form before any child is added. Same trap
+#             the style guide documents for the banner "?" button.
+#
 #   Style     Agilent WinForms Desktop App Style Guide: 56-px brand banner,
 #             version label, banner "?", About dialog with the verbatim
 #             disclaimer, embedded readme, embedded multi-resolution icon,
@@ -131,7 +139,7 @@ from System.Windows.Forms import (
 # =============================================================================
 # Style guide section 11 -- shown in the banner, title bar and MessageBoxes.
 APP_TITLE   = "EI Fragment Calculator"
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.1.2"
 APP_SLUG    = "ei_fragment_calculator"
 
 # Style guide section 2 -- canonical palette, built once and reused.
@@ -2882,6 +2890,18 @@ def _Run():
         content = Panel()
         content.Dock      = DockStyle.Fill
         content.BackColor = C_BG
+
+        # ADD THE PANEL TO THE FORM NOW, BEFORE ANY CHILD IS ADDED.
+        # WinForms computes an Anchor offset at the moment a child is
+        # added, from its parent's CURRENT size. A Panel that is not yet
+        # on the form is still the default 200 px wide, so a control at
+        # x=850 anchored Top|Right would record a right margin of
+        # 200-(850+88) = -738 and get flung off-screen when the panel
+        # later fills to ~944 px. Docking it first gives it the real
+        # client width, so every Right/Bottom anchor below is correct.
+        # This is the same trap the style guide documents for the banner
+        # "?" button in section 6.
+        form.Controls.Add(content)
         ui_font   = Font("Segoe UI", 9)
         mono_font = Font("Consolas", 8.5)
 
@@ -3386,7 +3406,9 @@ def _Run():
         txt_log.BackColor = C_CARD
         txt_log.ForeColor = C_BODY
 
-        form.Controls.Add(content)
+        # content was docked before its children (see above); the
+        # banner goes on LAST so it claims the top edge first and the
+        # Fill panel shrinks to what is left (style guide section 4).
         form.Controls.Add(build_banner(form, _on_about))
 
         # Show the form (modal relative to MassHunter main window).
