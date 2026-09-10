@@ -80,7 +80,29 @@ the ratio holds.
 > non-English-locale workstation carries corrupted m/z and abundance values
 > and should be regenerated with v3.1.**
 
-## Fixed in 3.1.1 -- Browse works
+## Fixed in 3.1.2 -- the Browse buttons were off-screen
+
+The **Input XML** and **Output Path** rows, their **Browse** buttons, the
+filter group and the log were positioned off the right edge of the window in
+3.1 and 3.1.1.
+
+v3.1 introduced a `content` panel to sit below the new 56-px banner but
+populated it *before* adding it to the form. WinForms fixes a control's
+`Anchor` offset when the control is added, from its parent's current size --
+and a `Panel` not yet on a form is still the default 200 px wide. A Browse
+button at `x=850` anchored `Top | Right` therefore recorded a right margin of
+`200 - (850+88) = -738 px`, and when the panel later filled to ~944 px that
+margin flung it to roughly `x = 1682`. The panel is now docked before any
+child is added, so the margin is a correct `+6 px`.
+
+This is the same trap this guide documents for the banner `?` button -- it
+applies to any right- or bottom-anchored control whose parent has not been
+sized yet.
+
+**Check the banner reads v3.1.2.** The filename does not carry the patch
+level; `APP_VERSION` and the banner do.
+
+## Fixed in 3.1.1 -- dialog ownership
 
 In 3.1, and in v3.0 before it, the **Input XML** and **Output Path** Browse
 buttons appeared to do nothing, and some message boxes never appeared. Both
